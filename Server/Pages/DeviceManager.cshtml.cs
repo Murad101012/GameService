@@ -51,7 +51,6 @@ public class DeviceManagerModel : PageModel
         ViewData["Page"]  = "DeviceManager";
 
         LoadDevices();
-        LoadConfig();
 
         if (!ModelState.IsValid)
             return Page();

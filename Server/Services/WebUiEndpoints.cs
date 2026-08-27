@@ -50,6 +50,8 @@ public static class WebUiEndpoints
         // Writes config.json and broadcasts RefreshConfiguration to all phones.
         app.MapPost("/api/config", async (
             Configuration config,
+            ConnectionManager cm,
+            DeviceConfigManager dcm,
             IHubContext<CommunicateSignalR> hubContext) =>
         {
             config.VideoFrameNormalized = Math.Clamp(config.VideoFrameNormalized, 0f, 1f);
@@ -58,10 +60,63 @@ public static class WebUiEndpoints
             string json = JsonSerializer.Serialize(config, options);
             await File.WriteAllTextAsync(ConfigPath, json);
 
+            foreach (var dev in cm.GetAllDevices())
+                dcm.SaveDeviceConfig(dev.DeviceId, config);
+
             await hubContext.Clients.All.SendAsync("RefreshConfiguration", json);
             Console.WriteLine($"[WebUI] Config pushed. Frame={config.VideoFrameNormalized:F2} Debug={config.SendDebug}");
 
             return Results.Ok(new { message = "Config pushed", config });
+        });
+
+        // ── POST /api/config/push/{device} ────────────────────────────────────
+        // Pushes the form config to a single device (used by Device Manager / Config per-device buttons).
+        // The JS sends FormData→JSON where numbers are strings, so allow reading from string.
+        app.MapPost("/api/config/push/{device}", async (
+            string device,
+            HttpContext ctx,
+            ConnectionManager cm,
+            DeviceConfigManager dcm,
+            IHubContext<CommunicateSignalR> hubContext) =>
+        {
+            device = Uri.UnescapeDataString(device);
+            if (!cm.TryGetConnectionId(device, out string? connId))
+                return Results.NotFound($"Device '{device}' not connected.");
+            if (!cm.TryGetDeviceIdentity(device, out var ident) || ident == null)
+                return Results.NotFound($"Device '{device}' not connected.");
+
+            string body = await new StreamReader(ctx.Request.Body).ReadToEndAsync();
+            if (string.IsNullOrWhiteSpace(body))
+                return Results.BadRequest("Empty body");
+
+            var opts = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+            };
+            Configuration? incoming;
+            try
+            {
+                incoming = JsonSerializer.Deserialize<Configuration>(body, opts);
+            }
+            catch (Exception ex)
+            {
+                return Results.BadRequest($"Invalid config JSON: {ex.Message}");
+            }
+            if (incoming == null)
+                return Results.BadRequest("Invalid config");
+
+            incoming.VideoFrameNormalized = Math.Clamp(incoming.VideoFrameNormalized, 0f, 1f);
+            incoming.ThumbnailQuality = Math.Clamp(incoming.ThumbnailQuality, 0f, 1f);
+            incoming.VideoQuality = Math.Clamp(incoming.VideoQuality, 0f, 1f);
+
+            dcm.SaveDeviceConfig(ident.DeviceId, incoming);
+
+            string json = JsonSerializer.Serialize(incoming, new JsonSerializerOptions { WriteIndented = true });
+            await hubContext.Clients.Client(connId).SendAsync("RefreshConfiguration", json);
+            Console.WriteLine($"[WebUI] Config pushed to single device {device} ({ident.DeviceId}): Frame={incoming.VideoFrameNormalized:F2} Debug={incoming.SendDebug}");
+
+            return Results.Ok(new { message = $"Config pushed to {device}", config = incoming });
         });
 
         // ── GET /api/browse/{device} ──────────────────────────────────────────

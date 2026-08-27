@@ -274,6 +274,11 @@ app.MapGet("/api/cache/browse/{device}", async (string device, string? path, int
     {
         var cached = cacheMgr.GetAllCachedDevices(connMgr).FirstOrDefault(d => d.DeviceName == device);
         if (cached != null) devId = cached.DeviceId;
+        else
+        {
+            var resolved = cacheMgr.TryResolveDeviceId(device);
+            if (resolved != null) devId = resolved;
+        }
     }
     var folderEntry = cacheMgr.GetFolderCache(devId, path);
     if (folderEntry != null)
@@ -283,6 +288,63 @@ app.MapGet("/api/cache/browse/{device}", async (string device, string? path, int
         return Results.Ok(new { currentNode = folderEntry.CurrentNode, directories = dirs, files, totalFileCount = files.Count, startIndex, fileLimit, exceededAt = (object?)null });
     }
     return Results.NotFound(new { message = "Folder not cached. Connect the phone and browse this folder first." });
+});
+app.MapPost("/api/cache/browse/{device}", async (string device, HttpContext ctx, CacheManager cacheMgr, ConnectionManager connMgr) =>
+{
+    device = Uri.UnescapeDataString(device);
+    string path = ctx.Request.Query["path"].ToString() ?? "";
+    try
+    {
+        var body = await new StreamReader(ctx.Request.Body).ReadToEndAsync();
+        if (string.IsNullOrWhiteSpace(body)) return Results.BadRequest(new { message = "Empty body" });
+        var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+        var req = JsonSerializer.Deserialize<SaveFolderCacheRequest>(body, opts);
+        if (req == null) return Results.BadRequest(new { message = "Invalid request" });
+
+        string devId = device;
+        DeviceIdentity? ident = null;
+        if (connMgr.TryGetDeviceIdentity(device, out var di) && di != null)
+        {
+            devId = di.DeviceId;
+            ident = di;
+        }
+        else
+        {
+            var cached = cacheMgr.GetAllCachedDevices(connMgr).FirstOrDefault(d => d.DeviceName.Equals(device, StringComparison.OrdinalIgnoreCase));
+            if (cached != null) devId = cached.DeviceId;
+            else
+            {
+                var resolved = cacheMgr.TryResolveDeviceId(device);
+                if (resolved != null) devId = resolved;
+            }
+            // Also check if device param is actually a deviceId of a currently connected device
+            var byId = connMgr.GetAllDevices().FirstOrDefault(d => d.DeviceId.Equals(device, StringComparison.OrdinalIgnoreCase));
+            if (byId != null)
+            {
+                devId = byId.DeviceId;
+                ident = byId;
+            }
+        }
+
+        if (ident != null)
+        {
+            cacheMgr.SaveDeviceName(devId, ident.DeviceName);
+        }
+        else
+        {
+            var byId2 = connMgr.GetAllDevices().FirstOrDefault(d => d.DeviceId.Equals(devId, StringComparison.OrdinalIgnoreCase));
+            if (byId2 != null) cacheMgr.SaveDeviceName(devId, byId2.DeviceName);
+        }
+
+        cacheMgr.MergeFolderCache(devId, path, req.CurrentNode, req.Children ?? new List<FileNodeDto>());
+        Console.WriteLine($"[Cache] Saved folder '{path}' for device '{device}' (resolved id {devId}) with {req.Children?.Count ?? 0} children");
+        return Results.Ok(new { message = "Folder cached", deviceId = devId, path });
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Cache] Save folder error for {device} path '{path}': {ex.Message}");
+        return Results.StatusCode(500);
+    }
 });
 app.MapDelete("/api/cache/", (CacheManager cm) =>
 {
