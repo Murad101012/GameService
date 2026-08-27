@@ -352,6 +352,25 @@ app.MapGet("/api/cache/browse/{device}", async (string device, string? path, int
     }
     return Results.NotFound(new { message = "Folder not cached. Connect the phone and browse this folder first." });
 });
+app.MapGet("/api/cache/frames/{device}", (string device, string path, CacheManager cm, ConnectionManager connMgr) =>
+{
+    device = Uri.UnescapeDataString(device);
+    path ??= "";
+    string devId = device;
+    if (connMgr.TryGetDeviceIdentity(device, out var ident) && ident != null) devId = ident.DeviceId;
+    else
+    {
+        var cached = cm.GetAllCachedDevices(connMgr).FirstOrDefault(d => d.DeviceName == device);
+        if (cached != null) devId = cached.DeviceId;
+        else
+        {
+            var resolved = cm.TryResolveDeviceId(device);
+            if (resolved != null) devId = resolved;
+        }
+    }
+    var frames = cm.GetCachedVideoFrames(devId, path);
+    return Results.Ok(new { frames });
+});
 app.MapPost("/api/cache/browse/{device}", async (string device, HttpContext ctx, CacheManager cacheMgr, ConnectionManager connMgr) =>
 {
     device = Uri.UnescapeDataString(device);
