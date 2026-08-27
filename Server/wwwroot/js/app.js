@@ -677,19 +677,10 @@ function openFeature(feature) {
     }
 }
 
-// Keeps the last known device list visible through brief connection gaps
-// instead of flashing "No devices connected" on every reconnect.
-let lastKnownDevices = [];
-try { lastKnownDevices = JSON.parse(localStorage.getItem('lastKnownDevices') || '[]'); } catch { lastKnownDevices = []; }
-
-function renderDeviceItems(devices, stale) {
+function renderDeviceItems(devices) {
     const list = document.getElementById('device-list');
     if (!list) return;
-    list.innerHTML = '';
-    const note = stale
-        ? '<li class="device-empty" style="opacity:.6;">Reconnecting… showing last known devices</li>'
-        : '';
-    let html = note;
+    let html = '';
     for (const dev of devices) {
         const name = dev.deviceName;
         devicePlatforms[name] = (dev.platform || '').toLowerCase();
@@ -712,26 +703,14 @@ async function refreshDeviceList() {
     try {
         const r = await fetch('/api/devices');
         const devices = await r.json();
-
-        if (!devices.length && lastKnownDevices.length) {
-            // Transient gap (device reconnecting): keep last known list visible.
-            renderDeviceItems(lastKnownDevices, true);
-            return;
-        }
         if (!devices.length) {
-            document.getElementById('device-list').innerHTML =
-                '<li class="device-empty">No devices connected</li>';
+            const list = document.getElementById('device-list');
+            if (list) list.innerHTML = '<li class="device-empty">No devices connected</li>';
             return;
         }
-        lastKnownDevices = devices;
-        try { localStorage.setItem('lastKnownDevices', JSON.stringify(devices)); } catch { }
-        renderDeviceItems(devices, false);
+        renderDeviceItems(devices);
     } catch {
-        if (lastKnownDevices.length) {
-            renderDeviceItems(lastKnownDevices, true);
-        } else {
-            showToast('Failed to refresh device list.', 'error');
-        }
+        showToast('Failed to refresh device list.', 'error');
     }
 }
 

@@ -274,9 +274,18 @@ public static class WebUiEndpoints
 
             try
             {
-                // First call: get file metadata with isLowRes=true (so phone pre-processes it)
-                var nodeInfo = await hubContext.Clients.Client(connId)
-                    .InvokeAsync<FileNodeResultDto>("GetPathInfo", path, true, ct);
+                // Use override-aware calls when frame/quality is specified (video frame slider)
+                FileNodeResultDto? nodeInfo;
+                if (effectiveFrame >= 0f || effectiveQuality >= 0f)
+                {
+                    nodeInfo = await hubContext.Clients.Client(connId)
+                        .InvokeAsync<FileNodeResultDto>("GetPathInfoWithOverride", path, true, effectiveFrame, effectiveQuality, ct);
+                }
+                else
+                {
+                    nodeInfo = await hubContext.Clients.Client(connId)
+                        .InvokeAsync<FileNodeResultDto>("GetPathInfo", path, true, ct);
+                }
 
                 if (nodeInfo == null || !nodeInfo.Exists || nodeInfo.CurrentNode.IsDirectory)
                     return Results.NotFound();
@@ -295,8 +304,17 @@ public static class WebUiEndpoints
                         return Results.StatusCode(503);
 
                     int bytesToRead = (int)Math.Min(chunkSize, totalLength - offset);
-                    byte[]? chunk = await hubContext.Clients.Client(activeConn)
-                        .InvokeAsync<byte[]>("GetFileChunk", path, offset, bytesToRead, true, ct);
+                    byte[]? chunk;
+                    if (effectiveFrame >= 0f || effectiveQuality >= 0f)
+                    {
+                        chunk = await hubContext.Clients.Client(activeConn)
+                            .InvokeAsync<byte[]>("GetFileChunkWithOverride", path, offset, bytesToRead, true, effectiveFrame, effectiveQuality, ct);
+                    }
+                    else
+                    {
+                        chunk = await hubContext.Clients.Client(activeConn)
+                            .InvokeAsync<byte[]>("GetFileChunk", path, offset, bytesToRead, true, ct);
+                    }
 
                     if (chunk == null || chunk.Length == 0) break;
                     await ms.WriteAsync(chunk, ct);
@@ -368,24 +386,50 @@ public static class WebUiEndpoints
                     ? $"inline; filename=\"{fileName}\""
                     : $"attachment; filename=\"{fileName}\"";
 
-                ctx.Response.ContentType   = contentType;
-                ctx.Response.ContentLength = totalLength;
-                ctx.Response.Headers["Content-Disposition"] = disposition;
-                ctx.Response.StatusCode = 200;
+                // ── Range support for video seeking ──
+                long rangeStart = 0, rangeEnd = totalLength - 1;
+                bool isRange = false;
+                var rangeHeader = ctx.Request.Headers["Range"].ToString();
+                if (!string.IsNullOrEmpty(rangeHeader) && rangeHeader.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
+                {
+                    var range = rangeHeader.Substring(6).Split('-');
+                    if (long.TryParse(range[0], out var s)) rangeStart = s;
+                    if (range.Length > 1 && long.TryParse(range[1], out var e)) rangeEnd = e;
+                    rangeEnd = Math.Min(rangeEnd, totalLength - 1);
+                    if (rangeStart < 0) rangeStart = 0;
+                    if (rangeStart <= rangeEnd) isRange = true;
+                }
 
-                long offset = 0;
+                long contentLength = isRange ? (rangeEnd - rangeStart + 1) : totalLength;
+
+                ctx.Response.ContentType   = contentType;
+                ctx.Response.ContentLength = contentLength;
+                ctx.Response.Headers["Content-Disposition"] = disposition;
+                ctx.Response.Headers["Accept-Ranges"] = "bytes";
+                if (isRange)
+                {
+                    ctx.Response.StatusCode = 206;
+                    ctx.Response.Headers["Content-Range"] = $"bytes {rangeStart}-{rangeEnd}/{totalLength}";
+                }
+                else
+                {
+                    ctx.Response.StatusCode = 200;
+                }
+
+                long offset = isRange ? rangeStart : 0;
+                long endOffset = isRange ? rangeEnd : totalLength - 1;
                 const int chunkSize = 512 * 1024; // 512 KB chunks
                 using var msCache = new MemoryStream();
-                bool isImageForCache = preview && (Path.GetExtension(fileName ?? "").ToLowerInvariant() is ".jpg" or ".jpeg" or ".png" or ".webp" or ".bmp" or ".gif");
+                bool isImageForCache = !isRange && preview && (Path.GetExtension(fileName ?? "").ToLowerInvariant() is ".jpg" or ".jpeg" or ".png" or ".webp" or ".bmp" or ".gif");
 
-                while (offset < totalLength)
+                while (offset <= endOffset)
                 {
                     ct.ThrowIfCancellationRequested();
 
                     if (!cm.TryGetConnectionId(device, out string? activeConn))
                         throw new IOException($"Device '{device}' disconnected.");
 
-                    int bytesToRead = (int)Math.Min(chunkSize, totalLength - offset);
+                    int bytesToRead = (int)Math.Min(chunkSize, endOffset - offset + 1);
                     byte[]? chunk = await hubContext.Clients.Client(activeConn)
                         .InvokeAsync<byte[]>("GetFileChunk", path, offset, bytesToRead, false, ct);
 
@@ -393,6 +437,7 @@ public static class WebUiEndpoints
                     await ctx.Response.Body.WriteAsync(chunk, ct);
                     if (isImageForCache) await msCache.WriteAsync(chunk, ct);
                     offset += chunk.Length;
+                    if (chunk.Length < bytesToRead) break;
                 }
                 // Save full-quality image to thumbnail cache with quality 1.0 so its cover shows highest quality next time (never downgrade)
                 if (isImageForCache && msCache.Length > 0)

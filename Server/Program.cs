@@ -695,6 +695,83 @@ app.UseMiddleware<WebDavMiddleware>();
 // ── SignalR Hub ──────────────────────────────────────────────────────────────
 app.MapHub<CommunicateSignalR>("/communicate");
 
+// ── Video transcode endpoints for WebUI lightbox (online Connected Device) ──
+app.MapPost("/api/video/transcode/{device}", async (string device, HttpContext ctx, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext) =>
+{
+    device = Uri.UnescapeDataString(device);
+    if (!cm.TryGetConnectionId(device, out var connId))
+        return Results.NotFound($"Device '{device}' not connected.");
+    try
+    {
+        var body = await new StreamReader(ctx.Request.Body).ReadToEndAsync();
+        var doc = JsonSerializer.Deserialize<JsonElement>(body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        string path = doc.TryGetProperty("path", out var p) ? p.GetString() ?? "" : "";
+        float brm = 1f, resm = 1f, capMbps = 3f;
+        bool capEn = false, resEn = false;
+        int resPx = 720;
+        if (doc.TryGetProperty("bitrateMultiplier", out var v) && v.ValueKind == JsonValueKind.Number) brm = v.GetSingle();
+        else if (doc.TryGetProperty("BitrateMultiplier", out v) && v.ValueKind == JsonValueKind.Number) brm = v.GetSingle();
+        if (doc.TryGetProperty("resolutionMultiplier", out v) && v.ValueKind == JsonValueKind.Number) resm = v.GetSingle();
+        else if (doc.TryGetProperty("ResolutionMultiplier", out v) && v.ValueKind == JsonValueKind.Number) resm = v.GetSingle();
+        if (doc.TryGetProperty("bitrateCappingEnabled", out v)) capEn = v.ValueKind == JsonValueKind.True;
+        else if (doc.TryGetProperty("BitrateCappingEnabled", out v)) capEn = v.ValueKind == JsonValueKind.True;
+        if (doc.TryGetProperty("bitrateCapMbps", out v) && v.ValueKind == JsonValueKind.Number) capMbps = v.GetSingle();
+        else if (doc.TryGetProperty("BitrateCapMbps", out v) && v.ValueKind == JsonValueKind.Number) capMbps = v.GetSingle();
+        if (doc.TryGetProperty("resolutionCeilingEnabled", out v)) resEn = v.ValueKind == JsonValueKind.True;
+        else if (doc.TryGetProperty("ResolutionCeilingEnabled", out v)) resEn = v.ValueKind == JsonValueKind.True;
+        if (doc.TryGetProperty("resolutionCeilingPx", out v) && v.ValueKind == JsonValueKind.Number) resPx = v.GetInt32();
+        else if (doc.TryGetProperty("ResolutionCeilingPx", out v) && v.ValueKind == JsonValueKind.Number) resPx = v.GetInt32();
+        int capBps = (int)Math.Round(capMbps * 1_000_000);
+        var resp = await hubContext.Clients.Client(connId).InvokeCoreAsync<JsonElement>("StartVideoTranscode", new object?[] { path, brm, resm, capEn, capBps, resEn, resPx }, CancellationToken.None);
+        string sessionId = resp.TryGetProperty("sessionId", out var s) ? s.GetString() ?? "" : "";
+        string outputPath = resp.TryGetProperty("outputPath", out var o) ? o.GetString() ?? "" : "";
+        if (string.IsNullOrEmpty(sessionId)) return Results.Json(new { message = "Phone refused to start transcode" }, statusCode: 500);
+        Console.WriteLine($"[Video] Start transcode {path} on {device} -> session {sessionId} brm={brm} resm={resm}");
+        return Results.Ok(new { sessionId, outputPath });
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Video] Start transcode failed for {device}: {ex.Message}");
+        return Results.Json(new { message = ex.Message }, statusCode: 500);
+    }
+});
+app.MapGet("/api/video/transcode/{device}/{sessionId}", async (string device, string sessionId, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext) =>
+{
+    device = Uri.UnescapeDataString(device);
+    sessionId = Uri.UnescapeDataString(sessionId);
+    if (!cm.TryGetConnectionId(device, out var connId))
+        return Results.NotFound($"Device '{device}' not connected.");
+    try
+    {
+        var state = await hubContext.Clients.Client(connId).InvokeCoreAsync<JsonElement>("GetTranscodeProgress", new object[] { sessionId }, CancellationToken.None);
+        int progress = state.TryGetProperty("progress", out var p) ? p.GetInt32() : 0;
+        string outputPath = state.TryGetProperty("outputPath", out var o) ? o.GetString() ?? "" : "";
+        long outputBytes = 0;
+        if (state.TryGetProperty("outputBytes", out var b) && b.ValueKind == JsonValueKind.Number) outputBytes = b.GetInt64();
+        else if (state.TryGetProperty("outputLength", out b) && b.ValueKind == JsonValueKind.Number) outputBytes = b.GetInt64();
+        return Results.Ok(new { progress, outputPath, outputBytes });
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Video] Get progress failed for {device}/{sessionId}: {ex.Message}");
+        return Results.Json(new { message = ex.Message }, statusCode: 500);
+    }
+});
+app.MapPost("/api/video/transcode/stop/{device}/{sessionId}", async (string device, string sessionId, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext) =>
+{
+    device = Uri.UnescapeDataString(device);
+    sessionId = Uri.UnescapeDataString(sessionId);
+    if (!cm.TryGetConnectionId(device, out var connId))
+        return Results.NotFound($"Device '{device}' not connected.");
+    try
+    {
+        await hubContext.Clients.Client(connId).InvokeCoreAsync<JsonElement>("StopTranscode", new object[] { sessionId }, CancellationToken.None);
+        Console.WriteLine($"[Video] Stop transcode {sessionId} on {device}");
+        return Results.Ok(new { message = "Stopped" });
+    }
+    catch { return Results.Ok(new { message = "Stop sent" }); }
+});
+
 // ── Test endpoint ────────────────────────────────────────────────────────────
 app.MapGet("/api/test", () => Results.Ok("test ok"));
 
