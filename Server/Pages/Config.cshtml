@@ -245,18 +245,18 @@
             {
                 @foreach (var device in Model.ConnectedDevices)
                 {
-                    <li class="push-device-item" onmouseenter="hoverDeviceConfig(this, '@device')">
+                    <li class="push-device-item" onmouseenter="hoverDeviceConfig(this, '@device')" onmouseleave="hideDeviceConfig()">
                         <span class="push-device-name">📱 @device</span>
                         <button class="btn btn-ghost btn-sm" onclick="pushConfigToSingleDevice('@device')">
                             Push to this Device
                         </button>
-                        <div class="config-tooltip hidden">Loading config...</div>
                     </li>
                 }
             }
         </ul>
     </div>
 </div>
+<div id="config-tooltip-global" class="config-tooltip-global hidden"></div>
 
 @section Scripts {
 <script>
@@ -296,13 +296,50 @@
         }
     }
 
+    let _cfgTooltip = null;
+    function getCfgTooltip() {
+        if (!_cfgTooltip) {
+            _cfgTooltip = document.getElementById('config-tooltip-global');
+            if (!_cfgTooltip) {
+                _cfgTooltip = document.createElement('div');
+                _cfgTooltip.id = 'config-tooltip-global';
+                _cfgTooltip.className = 'config-tooltip-global hidden';
+                document.body.appendChild(_cfgTooltip);
+            }
+        }
+        return _cfgTooltip;
+    }
+    function hideDeviceConfig() {
+        const t = getCfgTooltip();
+        t.classList.add('hidden');
+    }
+    function positionCfgTooltip(anchor) {
+        const t = getCfgTooltip();
+        const rect = anchor.getBoundingClientRect();
+        const vw = window.innerWidth, vh = window.innerHeight;
+        // Measure after content is set; use fixed offset
+        let left = rect.right + 12;
+        let top = rect.top - 4;
+        if (left + 340 > vw) {
+            left = Math.max(8, rect.left);
+            top = rect.bottom + 8;
+        }
+        if (top + 200 > vh) top = Math.max(8, vh - 220);
+        if (left < 8) left = 8;
+        t.style.left = left + 'px';
+        t.style.top = top + 'px';
+    }
     async function hoverDeviceConfig(el, deviceName) {
-        const tooltip = el.querySelector('.config-tooltip');
+        const tooltip = getCfgTooltip();
         tooltip.classList.remove('hidden');
+        tooltip.textContent = 'Loading config...';
+        positionCfgTooltip(el);
         try {
             const r = await fetch(`/api/device-config/${encodeURIComponent(deviceName)}`);
+            if (tooltip.classList.contains('hidden')) return;
             if (r.ok) {
                 const cfg = await r.json();
+                if (tooltip.classList.contains('hidden')) return;
                 tooltip.innerHTML = `
                     <strong>${deviceName} Live Config:</strong><br>
                     Frame: ${cfg.videoFrameNormalized}<br>
@@ -315,6 +352,7 @@
                     Speed: ${cfg.speedLimitKbps} KB/s<br>
                     Parallel: ${cfg.parallelWork ?? 'N/A'} (${cfg.coreSet ?? '?'}/${cfg.coreAmount ?? '?'} cores)<br>
                     Routes: 📄${cfg.fileRoute ?? 'P2P'} · ⚙️${cfg.configRoute ?? 'Domain'} · 🐞${cfg.debugRoute ?? 'Domain'}`;
+                positionCfgTooltip(el);
             } else {
                 tooltip.textContent = 'Could not fetch device config';
             }
@@ -322,6 +360,8 @@
             tooltip.textContent = 'Error fetching config';
         }
     }
+    // Hide on scroll of the main area so the fixed pop-up doesn't float detached
+    document.querySelector('.main-area')?.addEventListener('scroll', hideDeviceConfig, { passive: true });
 </script>
 }
 

@@ -480,14 +480,30 @@ app.MapPost("/api/actions/cache-status", async (HttpContext ctx, ActionManager a
     // Simplified: return empty status
     return Results.Ok(new object[] {});
 });
-app.MapGet("/api/device-config/{device}", (string device, ConnectionManager cm, DeviceConfigManager dcm) =>
+app.MapGet("/api/device-config/{device}", async (string device, ConnectionManager cm, DeviceConfigManager dcm, IHubContext<CommunicateSignalR> hubContext, CancellationToken ct) =>
 {
     device = Uri.UnescapeDataString(device);
-    if (cm.TryGetDeviceIdentity(device, out var ident) && ident != null)
+    if (!cm.TryGetDeviceIdentity(device, out var ident) || ident == null || string.IsNullOrEmpty(ident.ConnectionId))
+        return Results.NotFound(new { message = "Could not fetch device config" });
+
+    // Try live fetch from device first (includes coreAmount/coreSet)
+    try
     {
-        var cfg = dcm.LoadDeviceConfig(ident.DeviceId);
-        if (cfg != null) return Results.Ok(cfg);
+        var invokeTask = hubContext.Clients.Client(ident.ConnectionId).InvokeAsync<System.Text.Json.JsonElement>("GetDeviceConfig", ct);
+        var delayTask = Task.Delay(TimeSpan.FromSeconds(5), ct);
+        var completed = await Task.WhenAny(invokeTask, delayTask);
+        if (completed == invokeTask)
+        {
+            var live = await invokeTask;
+            if (live.ValueKind != System.Text.Json.JsonValueKind.Undefined && live.ValueKind != System.Text.Json.JsonValueKind.Null)
+                return Results.Json(live);
+        }
     }
+    catch { }
+
+    // Fallback to saved per-device config on disk
+    var cfg = dcm.LoadDeviceConfig(ident.DeviceId);
+    if (cfg != null) return Results.Ok(cfg);
     return Results.NotFound(new { message = "Could not fetch device config" });
 });
 app.MapGet("/api/device-config-saved/{device}", (string device, DeviceConfigManager dcm, ConnectionManager cm) =>

@@ -765,7 +765,7 @@ code, kbd {
     color: var(--text);
 }
 
-.push-device-list { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.push-device-list { list-style: none; display: flex; flex-direction: column; gap: 10px; overflow: visible; }
 .push-device-item {
     position: relative;
     display: flex;
@@ -775,18 +775,39 @@ code, kbd {
     background: var(--surface2);
     border-radius: var(--radius-sm);
     border: 1px solid var(--glass-border);
+    overflow: visible;
 }
 .config-tooltip {
     position: absolute;
-    top: 100%; left: 0; z-index: 50;
-    margin-top: 6px;
+    top: calc(100% + 6px); left: 0; z-index: 50;
+    min-width: 320px; max-width: 420px;
     padding: 10px 14px;
-    background: rgba(13,15,20,0.95);
+    background: rgba(13,15,20,0.98);
     border: 1px solid var(--accent);
     border-radius: var(--radius-sm);
     font-size: 0.8rem;
-    box-shadow: var(--shadow);
+    line-height: 1.5;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    pointer-events: none;
+    white-space: normal;
+    word-break: break-word;
 }
+.config-tooltip-global {
+    position: fixed;
+    z-index: 400;
+    min-width: 320px; max-width: 420px;
+    padding: 10px 14px;
+    background: rgba(13,15,20,0.98);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    pointer-events: none;
+    white-space: normal;
+    word-break: break-word;
+}
+.config-tooltip-global.hidden { display: none !important; }
 
 /* ── Cache Page ──────────────────────────────────────────────── */
 .cache-shell { max-width: 960px; margin: 30px auto; padding: 0 20px; display: flex; flex-direction: column; gap: 24px; }

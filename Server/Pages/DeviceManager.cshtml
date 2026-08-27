@@ -60,7 +60,7 @@
     <section class="main-area">
 
         @* Features panel (shown after device selection) *@
-        <div id="dm-features-panel" class="features-panel">
+        <div id="dm-features-panel" class="features-panel @(Model.SuccessMessage != null ? "hidden" : "")">
             <h2 class="features-title">📱 Features</h2>
             <div class="features-grid">
                 <div class="feature-card" onclick="dmOpenFeature('update')">
@@ -203,7 +203,7 @@
         </div>
 
         @* ===== CONFIG FEATURE SECTION ===== *@
-        <div id="dm-feature-config" class="dm-feature-section hidden">
+        <div id="dm-feature-config" class="dm-feature-section @(Model.SuccessMessage != null ? "" : "hidden")">
             <div class="dm-feature-header">
                 <button class="btn btn-ghost btn-sm" onclick="dmBackToFeatures()">← Back</button>
                 <h2 style="margin:0;font-size:1.2rem;">⚙️ Device & Media Configuration</h2>
@@ -440,12 +440,11 @@
                     {
                         @foreach (var dev in Model.ConnectedDevices)
                         {
-                            <li class="push-device-item" onmouseenter="dmHoverDeviceConfig(this, '@dev.DeviceName')">
+                            <li class="push-device-item" onmouseenter="dmHoverDeviceConfig(this, '@dev.DeviceName')" onmouseleave="dmHideDeviceConfig()">
                                 <span class="push-device-name">📱 @dev.DeviceName</span>
                                 <button class="btn btn-ghost btn-sm" onclick="dmPushConfigToSingleDevice('@dev.DeviceName')">
                                     Push to this Device
                                 </button>
-                                <div class="config-tooltip hidden">Loading config...</div>
                             </li>
                         }
                     }
@@ -455,6 +454,7 @@
 
     </section>
 </div>
+<div id="dm-config-tooltip-global" class="config-tooltip-global hidden"></div>
 
 @* ===== SERVICE LOGS MODAL ===== *@
 <div id="svc-logs-overlay" style="display:none;position:fixed;inset:0;z-index:10000;background:rgba(8,8,14,0.72);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);align-items:center;justify-content:center;" onclick="closeServiceLogsModal(event)">
@@ -1065,13 +1065,49 @@ async function dmPushConfigToSingleDevice(deviceName) {
     }
 }
 
+let _dmCfgTooltip = null;
+function getDmCfgTooltip() {
+    if (!_dmCfgTooltip) {
+        _dmCfgTooltip = document.getElementById('dm-config-tooltip-global');
+        if (!_dmCfgTooltip) {
+            _dmCfgTooltip = document.createElement('div');
+            _dmCfgTooltip.id = 'dm-config-tooltip-global';
+            _dmCfgTooltip.className = 'config-tooltip-global hidden';
+            document.body.appendChild(_dmCfgTooltip);
+        }
+    }
+    return _dmCfgTooltip;
+}
+function dmHideDeviceConfig() {
+    const t = getDmCfgTooltip();
+    t.classList.add('hidden');
+}
+function positionDmCfgTooltip(anchor) {
+    const t = getDmCfgTooltip();
+    const rect = anchor.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let left = rect.right + 12;
+    let top = rect.top - 4;
+    if (left + 340 > vw) {
+        left = Math.max(8, rect.left);
+        top = rect.bottom + 8;
+    }
+    if (top + 200 > vh) top = Math.max(8, vh - 220);
+    if (left < 8) left = 8;
+    t.style.left = left + 'px';
+    t.style.top = top + 'px';
+}
 async function dmHoverDeviceConfig(el, deviceName) {
-    const tooltip = el.querySelector('.config-tooltip');
+    const tooltip = getDmCfgTooltip();
     tooltip.classList.remove('hidden');
+    tooltip.textContent = 'Loading config...';
+    positionDmCfgTooltip(el);
     try {
         const r = await fetch(`/api/device-config/${encodeURIComponent(deviceName)}`);
+        if (tooltip.classList.contains('hidden')) return;
         if (r.ok) {
             const cfg = await r.json();
+            if (tooltip.classList.contains('hidden')) return;
             tooltip.innerHTML = `
                 <strong>${deviceName} Live Config:</strong><br>
                 Frame: ${cfg.videoFrameNormalized}<br>
@@ -1084,6 +1120,7 @@ async function dmHoverDeviceConfig(el, deviceName) {
                 Speed: ${cfg.speedLimitKbps} KB/s<br>
                 Parallel: ${cfg.parallelWork ?? 'N/A'} (${cfg.coreSet ?? '?'}/${cfg.coreAmount ?? '?'} cores)<br>
                 Routes: 📄${cfg.fileRoute ?? 'P2P'} · ⚙️${cfg.configRoute ?? 'Domain'} · 🐞${cfg.debugRoute ?? 'Domain'}`;
+            positionDmCfgTooltip(el);
         } else {
             tooltip.textContent = 'Could not fetch device config';
         }
@@ -1091,6 +1128,7 @@ async function dmHoverDeviceConfig(el, deviceName) {
         tooltip.textContent = 'Error fetching config';
     }
 }
+document.querySelector('#dm-feature-config')?.closest('.main-area')?.addEventListener('scroll', dmHideDeviceConfig, { passive: true });
 
 // ── Snapshots (Device Manager → Update) ──────────────────────────────────
 let dmSnapshotsInterval = null;
