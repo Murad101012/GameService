@@ -441,6 +441,13 @@ app.MapDelete("/api/cache/{deviceId}", (string deviceId, string? mediaType, Cach
     cm.ClearCache(deviceId, mediaType);
     return Results.Ok(new { message = $"Cache cleared for {deviceId} mediaType={mediaType ?? "all"}" });
 });
+app.MapGet("/api/cache/export/{deviceId}", async (string deviceId, CacheManager cm, ConnectionManager conn, IHubContext<CommunicateSignalR> hubContext) =>
+{
+    deviceId = Uri.UnescapeDataString(deviceId);
+    var bytes = await cm.ExportDeviceCacheLive(deviceId, conn, hubContext);
+    if (bytes == null) return Results.NotFound(new { message = "No cache found for device" });
+    return Results.File(bytes, "application/zip", $"cache_{deviceId}.zip");
+});
 app.MapPost("/api/cache/merge", async (HttpContext ctx, CacheManager cm) =>
 {
     try
