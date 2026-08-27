@@ -422,6 +422,45 @@ app.MapDelete("/api/cache/{deviceId}", (string deviceId, string? mediaType, Cach
     cm.ClearCache(deviceId, mediaType);
     return Results.Ok(new { message = $"Cache cleared for {deviceId} mediaType={mediaType ?? "all"}" });
 });
+app.MapPost("/api/cache/merge", async (HttpContext ctx, CacheManager cm) =>
+{
+    try
+    {
+        var body = await new StreamReader(ctx.Request.Body).ReadToEndAsync();
+        if (string.IsNullOrWhiteSpace(body)) return Results.BadRequest(new { message = "Empty body" });
+        var doc = JsonSerializer.Deserialize<JsonElement>(body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        List<string> deviceIds = new();
+        if (doc.TryGetProperty("deviceIds", out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var el in arr.EnumerateArray())
+                if (el.GetString() is string s && !string.IsNullOrWhiteSpace(s))
+                    deviceIds.Add(s.Trim());
+        }
+        else if (doc.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var el in doc.EnumerateArray())
+                if (el.GetString() is string s && !string.IsNullOrWhiteSpace(s))
+                    deviceIds.Add(s.Trim());
+        }
+        if (deviceIds.Count < 2)
+            return Results.BadRequest(new { message = "Select at least 2 devices to merge." });
+        deviceIds = deviceIds.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (deviceIds.Count < 2)
+            return Results.BadRequest(new { message = "Select at least 2 distinct devices." });
+        var targetId = cm.FindMostRecentDevice(deviceIds);
+        if (string.IsNullOrEmpty(targetId))
+            return Results.BadRequest(new { message = "Could not determine target device (no access time)." });
+        var sourceIds = deviceIds.Where(id => !id.Equals(targetId, StringComparison.OrdinalIgnoreCase)).ToList();
+        int merged = cm.MergeMultiple(sourceIds, targetId);
+        Console.WriteLine($"[Cache] Merge {string.Join(",", sourceIds)} -> {targetId} ({merged} merged)");
+        return Results.Ok(new { message = $"Merged {merged} device(s) into {targetId}.", targetId, merged, sourceIds });
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Cache] Merge failed: {ex}");
+        return Results.Json(new { message = $"Merge failed: {ex.Message}" }, statusCode: 500);
+    }
+});
 app.MapPost("/api/cache/import", async (HttpContext ctx, CacheManager cm) =>
 {
     // Ensure unlimited for this endpoint (multipart + Kestrel)
