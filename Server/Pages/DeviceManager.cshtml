@@ -350,15 +350,6 @@
                     </select>
                 </div>
 
-                @* ── PC Disk Cache Settings ── *@
-                <div class="form-group">
-                    <label asp-for="Config.CacheSizeMb" class="form-label">
-                        PC Thumbnail Cache Limit (MB)
-                        <span class="form-hint">Maximum storage allocated on PC disk for cached thumbnails</span>
-                    </label>
-                    <input asp-for="Config.CacheSizeMb" type="number" min="100" max="10000" step="100" class="limiter-input" />
-                </div>
-
                 @* ── Connection Routing ── *@
                 <div class="form-group">
                     <label class="form-label">

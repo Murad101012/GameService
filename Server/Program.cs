@@ -5,6 +5,8 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -33,6 +35,13 @@ builder.Services.AddSignalR(options =>
 {
     // Increase incoming message limit from default 32 KB to 10 MB
     options.MaximumReceiveMessageSize = 10 * 1024 * 1024;
+});
+builder.Services.Configure<FormOptions>(o =>
+{
+    o.MultipartBodyLengthLimit = long.MaxValue;
+    o.ValueLengthLimit = int.MaxValue;
+    o.MultipartHeadersLengthLimit = int.MaxValue;
+    o.ValueCountLimit = int.MaxValue;
 });
 builder.Services.AddSingleton<ConnectionManager>();
 builder.Services.AddSingleton<CacheManager>();
@@ -124,7 +133,11 @@ catch (Exception ex)
 // ── Middleware ───────────────────────────────────────────────────────────────
 app.Use(async (ctx, next) =>
 {
-    ctx.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>()!.MaxRequestBodySize = 256 * 1024 * 1024; // 256MB for cache ZIP imports
+    // 1GB for cache ZIP imports (342M file reported) — unlimited for import endpoint
+    if (ctx.Request.Path.StartsWithSegments("/api/cache/import"))
+        ctx.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>()!.MaxRequestBodySize = null;
+    else
+        ctx.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>()!.MaxRequestBodySize = 1024L * 1024 * 1024; // 1GB
     await next();
 });
 
@@ -285,7 +298,57 @@ app.MapGet("/api/cache/browse/{device}", async (string device, string? path, int
     {
         var dirs = folderEntry.Children?.Where(c => c.IsDirectory).ToList() ?? new();
         var files = folderEntry.Children?.Where(c => !c.IsDirectory).ToList() ?? new();
-        return Results.Ok(new { currentNode = folderEntry.CurrentNode, directories = dirs, files, totalFileCount = files.Count, startIndex, fileLimit, exceededAt = (object?)null });
+
+        sort = string.IsNullOrWhiteSpace(sort) ? "newest" : sort.Trim().ToLowerInvariant();
+        if (sort == "default") sort = "newest";
+        if (sort == "newest")
+        {
+            files = files.OrderByDescending(f => f.LastWriteTimeUtc).ToList();
+            dirs = dirs.OrderByDescending(d => d.LastWriteTimeUtc).ToList();
+        }
+        else if (sort == "oldest")
+        {
+            files = files.OrderBy(f => f.LastWriteTimeUtc).ToList();
+            dirs = dirs.OrderBy(d => d.LastWriteTimeUtc).ToList();
+        }
+        else if (sort == "quality")
+        {
+            files = files.OrderByDescending(f => cacheMgr.GetBestCachedThumbnailQuality(devId, f.RelativePath)).ThenByDescending(f => f.LastWriteTimeUtc).ToList();
+        }
+
+        int totalFileCount = files.Count;
+        int? exceededAt = null;
+        if (fileLimit > 0)
+        {
+            int start = Math.Max(0, Math.Min(startIndex, Math.Max(0, totalFileCount - 1)));
+            int available = totalFileCount - start;
+            if (available < fileLimit) exceededAt = totalFileCount;
+            files = files.Skip(start).Take(fileLimit).ToList();
+            startIndex = start;
+        }
+
+        var dirsWithCounts = dirs.Select(d =>
+        {
+            var counts = cacheMgr.GetFolderChildCounts(devId, d.RelativePath);
+            return new
+            {
+                d.Name,
+                d.RelativePath,
+                d.IsDirectory,
+                d.Length,
+                d.OriginalLength,
+                d.LastWriteTimeUtc,
+                d.OriginalPreviewLength,
+                d.EntryKind,
+                d.Disabled,
+                d.AccessWarning,
+                d.FreeBytes,
+                d.TotalBytes,
+                counts = new { images = counts.Images, videos = counts.Videos, audio = counts.Audio, other = counts.Other }
+            };
+        }).ToList();
+
+        return Results.Ok(new { currentNode = folderEntry.CurrentNode, directories = dirsWithCounts, files, totalFileCount, startIndex, fileLimit, exceededAt });
     }
     return Results.NotFound(new { message = "Folder not cached. Connect the phone and browse this folder first." });
 });
@@ -359,6 +422,30 @@ app.MapDelete("/api/cache/{deviceId}", (string deviceId, string? mediaType, Cach
     cm.ClearCache(deviceId, mediaType);
     return Results.Ok(new { message = $"Cache cleared for {deviceId} mediaType={mediaType ?? "all"}" });
 });
+app.MapPost("/api/cache/import", async (HttpContext ctx, CacheManager cm) =>
+{
+    // Ensure unlimited for this endpoint (multipart + Kestrel)
+    ctx.Features.Get<IHttpMaxRequestBodySizeFeature>()!.MaxRequestBodySize = null;
+    try
+    {
+        var form = await ctx.Request.ReadFormAsync();
+        var file = form.Files.GetFile("file") ?? form.Files.FirstOrDefault();
+        if (file == null) return Results.BadRequest(new { message = "No file uploaded" });
+        using var ms = new MemoryStream();
+        await file.CopyToAsync(ms);
+        var bytes = ms.ToArray();
+        Console.WriteLine($"[Cache] Importing {file.FileName} ({bytes.Length} bytes)");
+        var result = cm.ImportDeviceCache(bytes);
+        if (!result.Success) return Results.BadRequest(new { message = result.Message });
+        Console.WriteLine($"[Cache] Import succeeded: {result.Message}");
+        return Results.Ok(new { message = result.Message, deviceId = result.DeviceId });
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Cache] Import failed: {ex}");
+        return Results.Json(new { message = $"Import failed: {ex.Message}" }, statusCode: 500);
+    }
+}).DisableAntiforgery();
 
 // ── Actions endpoints ──
 app.MapGet("/api/actions", (ActionManager am) => Results.Ok(am.GetAll()));

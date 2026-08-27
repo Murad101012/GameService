@@ -113,6 +113,22 @@
                 </div>
             </div>
 
+            @* ── PC Thumbnail Cache Limit ── *@
+            <div class="form-group">
+                <label class="form-label">PC Thumbnail Cache Limit</label>
+                <span class="form-hint" style="display:block;font-weight:400;font-size:0.8rem;color:var(--text2);margin-bottom:8px;">Unlimited = cache as much as needed (no size cap). Custom = enforce a maximum disk usage.</span>
+                <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+                    <select asp-for="CacheLimitMode" class="form-select" style="max-width:200px" id="cacheLimitMode" onchange="toggleCacheLimitMb()">
+                        <option value="Unlimited">Unlimited (Default)</option>
+                        <option value="Custom">Custom</option>
+                    </select>
+                    <div id="cacheLimitMbWrap" style="display:flex;align-items:center;gap:8px;">
+                        <input asp-for="CacheLimitMb" type="number" min="100" max="10000" step="100" class="limiter-input" style="max-width:160px" id="cacheLimitMb" />
+                        <span style="font-size:0.85rem;color:var(--text2);">MB</span>
+                    </div>
+                </div>
+            </div>
+
             @* ── Size Display Mode ── *@
             <div class="form-group">
                 <label asp-for="SizeDisplayMode" class="form-label">File Size Display Mode</label>
@@ -180,3 +196,16 @@
         })();
     </script>
 }
+<script>
+    function toggleCacheLimitMb() {
+        const mode = document.getElementById('cacheLimitMode')?.value;
+        const wrap = document.getElementById('cacheLimitMbWrap');
+        if (!wrap) return;
+        if (mode === 'Custom') {
+            wrap.style.display = 'flex';
+        } else {
+            wrap.style.display = 'none';
+        }
+    }
+    document.addEventListener('DOMContentLoaded', toggleCacheLimitMb);
+</script>

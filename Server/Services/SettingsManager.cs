@@ -43,6 +43,10 @@ public class AppSettings
     public bool ShowFileCountVideo { get; set; } = true;
     public bool ShowFileCountAudio { get; set; } = false;
     public bool ShowFileCountOther { get; set; } = false;
+
+    // PC Thumbnail Cache Limit
+    public string CacheLimitMode { get; set; } = "Unlimited"; // "Unlimited" or "Custom"
+    public int CacheLimitMb { get; set; } = 1024;
 }
 
 public class SettingsManager

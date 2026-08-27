@@ -37,9 +37,6 @@ namespace PhonesBridge.Services.Definitions
         // "Low" (2 cores) | "Medium" (half of cores) | "High" (75% of cores) | "Absolute" (all cores)
         public string ParallelWork { get; set; } = "Medium";
 
-        // PC Disk Cache settings
-        public int CacheSizeMb { get; set; } = 1024; // Default 1 GB
-
         // ── Connection routing ─────────────────────────────────────────────────
         // Per-channel data path choice: "P2P" (direct link when available) or
         // "Domain" (Cloudflare relay). Each channel falls back to the other side

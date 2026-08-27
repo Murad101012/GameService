@@ -7,10 +7,12 @@ namespace PhonesBridge.Pages;
 public class SettingsModel : PageModel
 {
     private readonly SettingsManager _settings;
+    private readonly CacheManager _cacheManager;
 
-    public SettingsModel(SettingsManager settings)
+    public SettingsModel(SettingsManager settings, CacheManager cacheManager)
     {
         _settings = settings;
+        _cacheManager = cacheManager;
     }
 
     [BindProperty]
@@ -52,6 +54,12 @@ public class SettingsModel : PageModel
     [BindProperty]
     public bool ShowFileCountOther { get; set; }
 
+    [BindProperty]
+    public string CacheLimitMode { get; set; } = "Unlimited";
+
+    [BindProperty]
+    public int CacheLimitMb { get; set; } = 1024;
+
     public string? SuccessMessage { get; private set; }
 
     public string? ErrorMessage { get; private set; }
@@ -79,6 +87,8 @@ public class SettingsModel : PageModel
         ShowFileCountVideo = s.ShowFileCountVideo;
         ShowFileCountAudio = s.ShowFileCountAudio;
         ShowFileCountOther  = s.ShowFileCountOther;
+        CacheLimitMode = s.CacheLimitMode;
+        CacheLimitMb = s.CacheLimitMb;
         LanUrls = SettingsManager.GetLocalLanUrls(s.Port);
     }
 
@@ -109,10 +119,15 @@ public class SettingsModel : PageModel
         s.ShowFileCountVideo = ShowFileCountVideo;
         s.ShowFileCountAudio = ShowFileCountAudio;
         s.ShowFileCountOther  = ShowFileCountOther;
+        s.CacheLimitMode = string.IsNullOrEmpty(CacheLimitMode) ? "Unlimited" : CacheLimitMode;
+        s.CacheLimitMb = Math.Clamp(CacheLimitMb, 100, 10000);
         s.AllowLanAccess   = AllowLanAccess;
 
         // Populate LAN URLs for the view (after potential change)
         LanUrls = SettingsManager.GetLocalLanUrls(Port);
+        // Also update bound properties for view
+        CacheLimitMode = s.CacheLimitMode;
+        CacheLimitMb = s.CacheLimitMb;
 
         bool needsRestart = portChanged || lanChanged;
         if (needsRestart)
@@ -133,6 +148,11 @@ public class SettingsModel : PageModel
         {
             _settings.Current = s;
             SuccessMessage = "Settings saved.";
+        }
+
+        if (s.CacheLimitMode == "Custom")
+        {
+            try { _cacheManager.EnforceCacheLimit(s.CacheLimitMb); } catch { }
         }
 
         return Page();

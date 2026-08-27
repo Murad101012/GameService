@@ -217,10 +217,11 @@ code, kbd {
 
 .device-list { list-style: none; padding: 0 8px; flex: 1; }
 .device-item {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 10px 12px;
+    padding: 16px 12px 10px;
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: background var(--transition);
@@ -228,23 +229,27 @@ code, kbd {
 .device-item:hover { background: var(--glass); }
 .device-item.active { background: rgba(108,99,255,0.15); }
 .device-item.active .device-name { color: var(--accent); font-weight: 600; }
-.device-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .device-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); }
 .device-empty { padding: 16px; color: var(--text2); text-align: center; }
 
 .link-tag {
+    position: absolute;
+    top: 2px;
+    right: 6px;
     display: inline-flex;
     align-items: center;
     gap: 0;
-    font-size: 0.62rem;
+    font-size: 0.55rem;
     font-weight: 700;
     letter-spacing: 0.03em;
     border: 1px solid var(--glass-border);
     border-radius: 4px;
-    padding: 2px 6px;
+    padding: 1px 4px;
     background: var(--surface2);
     white-space: nowrap;
     flex-shrink: 0;
+    line-height: 1;
 }
 .link-part { padding: 0 1px; }
 .link-part.p2p-part.up { color: var(--green); text-shadow: 0 0 6px rgba(40,199,111,0.35); }

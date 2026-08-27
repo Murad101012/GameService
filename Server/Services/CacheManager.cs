@@ -1206,13 +1206,19 @@ public class CacheManager
         string dir = GetDeviceCacheDir(deviceId);
         string jsonPath = Path.Combine(dir, $"folder_{hash}.json");
 
+        var deduped = new Dictionary<string, FileNodeDto>(StringComparer.OrdinalIgnoreCase);
+        if (nodeInfo.Children != null)
+        {
+            foreach (var c in nodeInfo.Children)
+                deduped[NormalizeRelPath(c.RelativePath)] = c;
+        }
         var entry = new FolderCacheEntry
         {
             FolderPath = normalized,
             CachedTimeUtc = DateTime.UtcNow,
             Exists = nodeInfo.Exists,
             CurrentNode = nodeInfo.CurrentNode,
-            Children = nodeInfo.Children ?? new List<FileNodeDto>()
+            Children = deduped.Values.ToList()
         };
 
         string json = JsonSerializer.Serialize(entry, new JsonSerializerOptions { WriteIndented = true, PropertyNameCaseInsensitive = true });
@@ -1235,10 +1241,10 @@ public class CacheManager
         if (existing?.Children != null)
         {
             foreach (var c in existing.Children)
-                merged[c.RelativePath] = c;
+                merged[NormalizeRelPath(c.RelativePath)] = c;
         }
         foreach (var c in children)
-            merged[c.RelativePath] = c;
+            merged[NormalizeRelPath(c.RelativePath)] = c;
 
         var entry = new FolderCacheEntry
         {
