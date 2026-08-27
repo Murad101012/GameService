@@ -122,6 +122,7 @@ public static class WebUiEndpoints
         // ── GET /api/browse/{device} ──────────────────────────────────────────
         // Lists a directory on the connected phone.
         // Query: path (default ""), startIndex (default 0), fileLimit (default 0 = all)
+        // Now forwards pagination & filters to phone so metadata is limited phone→Server as well.
         app.MapGet("/api/browse/{device}", async (
             string device,
             string? path,
@@ -129,7 +130,10 @@ public static class WebUiEndpoints
             IHubContext<CommunicateSignalR> hubContext,
             CancellationToken ct,
             int startIndex = 0,
-            int fileLimit = 0) =>
+            int fileLimit = 0,
+            bool imageOnly = false,
+            bool videoOnly = false,
+            int sinceDays = 0) =>
         {
             device = Uri.UnescapeDataString(device);
             path ??= "";
@@ -144,7 +148,17 @@ public static class WebUiEndpoints
             FileNodeResultDto? nodeInfo;
             try
             {
-                var invokeTask = hubContext.Clients.Client(connId).InvokeAsync<FileNodeResultDto>("GetPathInfo", path, false, ct);
+                Console.WriteLine($"[WebUi] Browse {device} path='{path}' start={startIndex} limit={fileLimit} img={imageOnly} vid={videoOnly} since={sinceDays}");
+                // Try new paginated/filtered call first; fallback to old for legacy clients
+                Task<FileNodeResultDto> invokeTask;
+                try
+                {
+                    invokeTask = hubContext.Clients.Client(connId).InvokeAsync<FileNodeResultDto>("GetPathInfoWithOverride", path, false, -1f, -1f, imageOnly, videoOnly, sinceDays, startIndex, fileLimit, ct);
+                }
+                catch
+                {
+                    invokeTask = hubContext.Clients.Client(connId).InvokeAsync<FileNodeResultDto>("GetPathInfo", path, false, ct);
+                }
                 var delayTask = Task.Delay(TimeSpan.FromSeconds(15));
                 var completed = await Task.WhenAny(invokeTask, delayTask);
                 if (completed == delayTask)
@@ -152,8 +166,13 @@ public static class WebUiEndpoints
                     Console.WriteLine($"[WebUi] Browse {device} GetPathInfo timeout after 15s");
                     return Results.StatusCode(504);
                 }
-                nodeInfo = await invokeTask;
-                Console.WriteLine($"[WebUi] Browse {device} GetPathInfo returned exists={nodeInfo?.Exists} children={nodeInfo?.Children?.Count}");
+                try { nodeInfo = await invokeTask; }
+                catch (Exception ex) when (ex.Message.Contains("GetPathInfoWithOverride") || ex.Message.Contains("No such method"))
+                {
+                    Console.WriteLine($"[WebUi] Browse {device} WithOverride not supported, fallback to GetPathInfo: {ex.Message}");
+                    nodeInfo = await hubContext.Clients.Client(connId).InvokeAsync<FileNodeResultDto>("GetPathInfo", path, false, ct);
+                }
+                Console.WriteLine($"[WebUi] Browse {device} GetPathInfo returned exists={nodeInfo?.Exists} children={nodeInfo?.Children?.Count} total={nodeInfo?.TotalFileCount}");
             }
             catch (OperationCanceledException)
             {
@@ -169,26 +188,28 @@ public static class WebUiEndpoints
             if (nodeInfo == null || !nodeInfo.Exists)
                 return Results.NotFound($"Path '{path}' not found on device.");
 
-            // Separate dirs and files; only files are limited
+            // Separate dirs and files; only files are paginated (dirs always returned)
             var dirs  = nodeInfo.Children?.Where(c => c.IsDirectory).ToList()  ?? new();
             var files = nodeInfo.Children?.Where(c => !c.IsDirectory).ToList() ?? new();
 
-            int totalFileCount = files.Count;
+            int totalFileCount = nodeInfo.TotalFileCount != 0 ? nodeInfo.TotalFileCount : files.Count;
             int? exceededAt    = null;
 
-            if (fileLimit > 0)
+            // If phone already paginated (files.Count <= fileLimit or TotalFileCount > files.Count), don't re-paginate.
+            // Otherwise fallback for old clients that returned all.
+            if (fileLimit > 0 && files.Count > fileLimit)
             {
-                // Clamp startIndex to valid range
+                // Old client returned all → paginate server-side
                 startIndex = Math.Max(0, Math.Min(startIndex, totalFileCount - 1));
-
                 int available = totalFileCount - startIndex;
-                if (available < fileLimit)
-                {
-                    // The requested window exceeds what's available
-                    exceededAt = totalFileCount;
-                }
-
+                if (available < fileLimit) exceededAt = totalFileCount;
                 files = files.Skip(startIndex).Take(fileLimit).ToList();
+            }
+            else if (fileLimit > 0)
+            {
+                // Phone did pagination → just compute exceededAt
+                int available = totalFileCount - startIndex;
+                if (available < fileLimit) exceededAt = totalFileCount;
             }
 
             return Results.Ok(new
