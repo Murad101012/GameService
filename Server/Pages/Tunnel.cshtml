@@ -1,0 +1,193 @@
+@page
+@model TunnelModel
+@{
+    ViewData["Title"] = "VPN / Tunnel";
+}
+
+<div class="config-shell">
+    <div class="config-card glass-card">
+        <h1 class="config-title">🛰️ VPN / Tunnel</h1>
+        <p class="config-subtitle">
+            A SOCKS5 proxy on this PC that relays <b>every</b> connection through a connected phone
+            (TCP + UDP/DNS). The destination sees the phone's IP, never this PC's.
+        </p>
+
+        <div id="tunnel-status" class="tunnel-status pending">Loading…</div>
+
+        <div class="form-group">
+            <label class="form-label">
+                Egress Phone
+                <span class="form-hint">The connected phone that will open the real sockets.</span>
+            </label>
+            <div class="tunnel-actions">
+                <select id="tunnel-device" class="form-select"></select>
+                <button class="btn btn-primary" onclick="applyTunnelDevice()">Apply</button>
+                <button class="btn btn-ghost" onclick="applyTunnelDevice('')">Auto (first device)</button>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Connectivity Test</label>
+            <div class="tunnel-actions">
+                <button class="btn btn-accent" onclick="testTunnel()">Test Egress IP</button>
+                <span id="tunnel-test-result" class="tunnel-test-result"></span>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Usage</label>
+            <div class="tunnel-stats-row">
+                <div class="stat-box">
+                    <span class="stat-num" id="stat-tcp">0</span>
+                    <span class="stat-label">TCP connections</span>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-num" id="stat-udp">0</span>
+                    <span class="stat-label">UDP associations</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">
+                TUN Full-Capture
+                <span class="form-hint">
+                    Routes <b>ALL</b> apps on this PC through the phone (system-wide VPN).
+                    Safe by design: it only turns on after a live test through the tunnel
+                    succeeds, and a watchdog instantly restores your internet if the
+                    tunnel ever fails — your Wi-Fi can never be lost.
+                </span>
+            </label>
+            <div class="tunnel-actions">
+                <button id="capture-start-btn" class="btn btn-accent" onclick="captureStart()">▶ Start Full-Capture</button>
+                <button id="capture-stop-btn" class="btn btn-danger hidden" onclick="captureStop()">⏹ Stop Full-Capture</button>
+                <span id="capture-state" class="tunnel-test-result"></span>
+            </div>
+            <div id="capture-log" class="run-log hidden" style="margin-top:10px;max-height:160px"></div>
+        </div>
+
+        <div class="form-group">
+            <div class="alert alert-info">
+                ⚙️ <b>How to use (per-app):</b> point an app's proxy at <code>127.0.0.1:5190</code>
+                (SOCKS5). For <b>system-wide</b> capture use the TUN toggle above.
+            </div>
+        </div>
+
+        <div class="tunnel-actions">
+            <button class="btn btn-ghost" onclick="restartTunnel()">↻ Restart Proxy</button>
+            <button class="btn btn-ghost" onclick="refreshTunnelStatus()">Refresh</button>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    async function fetchJson(url, opts) {
+        const r = await fetch(url, opts);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    }
+
+    async function refreshTunnelStatus() {
+        const el = document.getElementById('tunnel-status');
+        const sel = document.getElementById('tunnel-device');
+        try {
+            const s = await fetchJson('/api/tunnel/status');
+            const running = s.running ? '✓' : '✗';
+            el.className = 'tunnel-status ' + (s.running ? 'ok' : 'err');
+            el.innerHTML = `Proxy <b>${running} running</b> on <code>127.0.0.1:${s.port}</code> — selected: <b>${escHtml(s.selectedDevice || '(auto)')}</b>`;
+
+            // Rebuild device dropdown, preserving selection.
+            const prev = sel.value;
+            sel.replaceChildren();
+            for (const d of s.devices) {
+                const opt = document.createElement('option');
+                opt.value = d;
+                opt.textContent = d;
+                sel.appendChild(opt);
+            }
+            if (s.selectedDevice && s.devices.some(d => d === s.selectedDevice)) sel.value = s.selectedDevice;
+            else if (prev && s.devices.some(d => d === prev)) sel.value = prev;
+
+            document.getElementById('stat-tcp').textContent = s.tcpConnections;
+            document.getElementById('stat-udp').textContent = s.udpAssociations;
+
+            // TUN full-capture state.
+            const st = document.getElementById('capture-state');
+            document.getElementById('capture-start-btn').classList.toggle('hidden', !!s.captureActive);
+            document.getElementById('capture-stop-btn').classList.toggle('hidden', !s.captureActive);
+            st.className = 'tunnel-test-result ' + (s.captureActive ? 'ok' : 'err');
+            st.textContent = s.captureActive
+                ? `ACTIVE — all traffic via ${escHtml(s.captureDevice)} (watchdog engaged)`
+                : 'Inactive';
+            const log = document.getElementById('capture-log');
+            if (s.captureLog && s.captureLog.length) {
+                log.classList.remove('hidden');
+                log.textContent = s.captureLog.join('\n');
+                log.scrollTop = log.scrollHeight;
+            }
+        } catch (e) {
+            el.className = 'tunnel-status err';
+            el.textContent = 'Failed to load status: ' + e.message;
+        }
+    }
+
+    async function captureStart() {
+        const st = document.getElementById('capture-state');
+        st.className = 'tunnel-test-result';
+        st.textContent = '⏳ Starting (pre-flight test before routing)…';
+        try {
+            const r = await fetchJson('/api/tunnel/capture/start', { method: 'POST' });
+            if (r.ok) { showToast('Full-capture ON', 'success'); refreshTunnelStatus(); }
+            else { st.className = 'tunnel-test-result err'; st.textContent = '✗ ' + r.error; }
+        } catch (e) { st.className = 'tunnel-test-result err'; st.textContent = '✗ ' + e.message; }
+    }
+
+    async function captureStop() {
+        await fetchJson('/api/tunnel/capture/stop', { method: 'POST' });
+        showToast('Full-capture OFF — internet restored', 'success');
+        refreshTunnelStatus();
+    }
+
+    async function applyTunnelDevice(device) {
+        if (arguments.length === 0) device = document.getElementById('tunnel-device').value;
+        await fetchJson('/api/tunnel/select', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device })
+        });
+        showToast('Tunnel egress set to ' + (device || 'auto'), 'success');
+        refreshTunnelStatus();
+    }
+
+    async function restartTunnel() {
+        await fetchJson('/api/tunnel/restart', { method: 'POST' });
+        showToast('Proxy restarted', 'success');
+        refreshTunnelStatus();
+    }
+
+    async function testTunnel() {
+        const out = document.getElementById('tunnel-test-result');
+        out.className = 'tunnel-test-result';
+        out.textContent = '⏳ Testing…';
+        try {
+            const r = await fetchJson('/api/tunnel/test');
+            if (r.ok && r.egress) {
+                out.className = 'tunnel-test-result ok';
+                out.textContent = '✓ destinations see: ' + r.egress;
+            } else {
+                out.className = 'tunnel-test-result err';
+                out.textContent = '✗ tunnel failed (no phone selected?)';
+            }
+        } catch (e) {
+            out.className = 'tunnel-test-result err';
+            out.textContent = '✗ ' + e.message;
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        refreshTunnelStatus();
+        setInterval(refreshTunnelStatus, 5000);
+    });
+</script>
+}

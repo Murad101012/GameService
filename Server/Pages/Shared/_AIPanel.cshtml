@@ -1,0 +1,107 @@
+@* AI Vision Panel — shared partial, included in Index and Offline pages *@
+<aside id="ai-panel" class="ai-panel">
+    <div class="ai-panel-header">
+        <h3 class="ai-sidebar-title">🤖 AI Vision</h3>
+        <button class="icon-btn" title="Hide AI panel" onclick="toggleAIPanel()">✕</button>
+    </div>
+
+    <div class="ai-panel-body">
+        @* Model selector tabs *@
+        <div class="ai-tabs">
+            <button class="ai-tab active" data-ai="smolvlm" onclick="switchAIModel('smolvlm')">SmolVLM</button>
+            <button class="ai-tab" data-ai="nsfw" onclick="switchAIModel('nsfw')">🔞 ViT-Large NSFW</button>
+        </div>
+
+        <div class="ai-sidebar-header">
+            <div class="ai-sidebar-actions">
+                <span id="ai-status-badge" class="ai-status-badge off">OFF</span>
+                <button id="ai-toggle-btn" class="btn btn-sm btn-primary" onclick="toggleAI()">Start AI</button>
+            </div>
+        </div>
+
+        @* SmolVLM-specific sections *@
+        <div id="ai-smolvlm-sections">
+            <div class="ai-sidebar-section-inner">
+                <label class="ai-label">Mode</label>
+                <select id="ai-mode" class="ai-mode-select" onchange="onAIModeChange()">
+                    <option value="yesno">Ask question (YES/NO)</option>
+                    <option value="ask">Ask question</option>
+                    <option value="describe">Describe the image</option>
+                </select>
+            </div>
+
+            <div class="ai-sidebar-section-inner">
+                <label class="ai-label">Prompt</label>
+                <div class="ai-prompt-row">
+                    <input id="ai-prompt" class="ai-prompt-input" type="text"
+                           placeholder="e.g. Does this image contain a cat?"
+                           onkeydown="if(event.key==='Enter')startAIScan('visible')" />
+                </div>
+                <div class="ai-preset-prompts">
+                    <span class="ai-preset-label">Quick:</span>
+                    <button class="btn btn-ghost btn-xs ai-preset" onclick="setAIPrompt('Does this image contain a person?')">Person?</button>
+                    <button class="btn btn-ghost btn-xs ai-preset" onclick="setAIPrompt('Is this a screenshot?')">Screenshot?</button>
+                    <button class="btn btn-ghost btn-xs ai-preset" onclick="setAIPrompt('Describe this image briefly.')">Describe</button>
+                    <button class="btn btn-ghost btn-xs ai-preset" onclick="setAIPrompt('Is there text visible? If so, what does it say?')">OCR</button>
+                </div>
+            </div>
+
+            <div class="ai-sidebar-section-inner">
+                <label class="ai-label">Concurrency: <span id="ai-concurrency-val">1</span></label>
+                <input id="ai-concurrency" class="ai-concurrency-slider" type="range" min="1" max="10" value="1"
+                       oninput="document.getElementById('ai-concurrency-val').textContent=this.value" />
+            </div>
+        </div>
+
+        <div id="ai-vram-info" class="ai-vram-info hidden">
+            <div class="ai-vram-bar-track">
+                <div id="ai-vram-bar-fill" class="ai-vram-bar-fill"></div>
+            </div>
+            <div class="ai-vram-text">
+                VRAM: <span id="ai-vram-used">0</span> / <span id="ai-vram-total">0</span> MB (<span id="ai-vram-pct">0</span>%)
+            </div>
+        </div>
+
+        <div class="ai-sidebar-section-inner ai-scan-buttons">
+            <button id="ai-scan-visible-btn" class="btn btn-accent btn-sm" onclick="startAIScan('visible')" disabled>
+                👁️ Scan Visible
+            </button>
+            <button id="ai-scan-all-btn" class="btn btn-accent btn-sm" onclick="startAIScan('all')" disabled>
+                📄 Scan All in Page
+            </button>
+            <button id="ai-process-queue-btn" class="btn btn-accent btn-sm" onclick="processAIQueue()"
+                    title="Process images added to queue (hover 🤖 on thumbnails)">
+                🎯 Process Selected (<span id="ai-queue-count">0</span>)
+            </button>
+        </div>
+
+        @* Queue panel *@
+        <div id="ai-queue-panel" class="ai-queue-panel hidden">
+            <div class="ai-results-header">
+                <span class="ai-results-title">📋 Queue</span>
+                <button class="btn btn-ghost btn-xs" onclick="clearAIQueue()">Clear</button>
+            </div>
+            <div id="ai-queue-list" class="ai-results-list"></div>
+        </div>
+
+        <div id="ai-processing" class="ai-processing hidden">
+            <div class="ai-processing-preview">
+                <img id="ai-processing-thumb" src="" alt="" />
+                <span id="ai-processing-name" class="ai-processing-name"></span>
+            </div>
+            <div id="ai-progress-text" class="ai-progress-text">Processing 0/0 — 0 YES found</div>
+            <div class="ai-processing-actions">
+                <button class="btn btn-ghost btn-xs" onclick="skipCurrentImage()">⏭ Skip</button>
+                <button class="btn btn-ghost btn-xs" onclick="stopAIProcessing()">⏹ Stop</button>
+            </div>
+        </div>
+
+        <div id="ai-results" class="ai-results hidden">
+            <div class="ai-results-header">
+                <span class="ai-results-title">✅ YES Results (<span id="ai-results-count">0</span>)</span>
+                <button class="btn btn-ghost btn-xs" onclick="clearAIResults()">Clear</button>
+            </div>
+            <div id="ai-results-list" class="ai-results-list"></div>
+        </div>
+    </div>
+</aside>

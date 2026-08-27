@@ -1,0 +1,225 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "File Browser";
+}
+
+<div class="app-shell">
+
+    @* ===== LEFT SIDEBAR: Device list ===== *@
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h2 class="sidebar-title">Devices</h2>
+            <button class="icon-btn refresh-devices-btn" title="Refresh device list" onclick="refreshDeviceList()">↻</button>
+        </div>
+
+        <ul id="device-list" class="device-list" data-mode="online">
+            @if (!Model.Devices.Any())
+            {
+                <li class="device-empty">No devices connected</li>
+            }
+            else
+            {
+                @foreach (var device in Model.Devices)
+                {
+                    <li class="device-item"
+                        data-device="@device.Name"
+                        onclick="selectDevice(this, '@Html.Raw(device.Name.Replace("'", "\\'"))')">
+                        <span class="device-icon">
+                            <img src="@(string.Equals(device.Platform, "Windows", StringComparison.OrdinalIgnoreCase) ? "/Images/windows-icon.png" : "/Images/R.png")" class="device-icon-img" alt="@device.Platform" style="width:20px;height:20px;vertical-align:middle;object-fit:contain;" />
+                        </span>
+                        <span class="device-name">@device.Name</span>
+                        <span class="link-tag" title="P2P: @(device.P2PAvailable ? "direct connection active" : "unavailable") · Domain: @(device.DomainAvailable ? "relay connected" : "unavailable")">
+                            <span class="link-part p2p-part @(device.P2PAvailable ? "up" : "down")">P2P</span><span class="link-sep">/</span>
+                            <span class="link-part domain-part @(device.DomainAvailable ? "up" : "down")">Domain</span>
+                        </span>
+                    </li>
+                }
+            }
+        </ul>
+
+        @* ===== File Limiter Controls ===== *@
+        <div class="limiter-section">
+            <h3 class="limiter-title">📄 File Limiter</h3>
+            <label class="limiter-label">
+                Start Index
+                <input id="startIndex" class="limiter-input" type="number" min="0" value="0" />
+            </label>
+            <label class="limiter-label">
+                File Limit
+                <input id="fileLimit" class="limiter-input" type="number" min="0" value="0"
+                       placeholder="0 = all" title="0 means unlimited" />
+            </label>
+            <button class="btn btn-primary limiter-apply" onclick="applyLimiter()">Apply</button>
+        </div>
+    </aside>
+
+    @* ===== MAIN AREA: Breadcrumb + File Grid ===== *@
+    <section class="main-area">
+
+        @* Sticky header: breadcrumb + filter bar stay pinned while the grid scrolls *@
+        <div class="browser-sticky">
+
+            @* Breadcrumb navigation *@
+            <nav id="breadcrumb" class="breadcrumb" aria-label="Path navigation">
+                <span class="breadcrumb-empty">← Select a device</span>
+                <button id="ai-panel-toggle-btn" class="btn btn-ghost btn-sm ai-panel-toggle"
+                        title="Toggle AI Vision panel" onclick="toggleAIPanel()" style="margin-left:auto">
+                    🤖
+                </button>
+            </nav>
+
+            @* File filter bar *@
+            <div id="filter-bar" class="filter-bar hidden">
+                <span class="filter-label">Show:</span>
+                <button id="filter-all-btn" class="filter-btn" onclick="toggleFilter('all')">All</button>
+                <button id="filter-img-btn" class="filter-btn active" onclick="toggleFilter('image')">🖼️ Images</button>
+                <button id="filter-vid-btn" class="filter-btn active" onclick="toggleFilter('video')">🎬 Videos</button>
+                <select id="filter-date" class="filter-date-select" onchange="applyFilters()">
+                    <option value="all">📅 All Time</option>
+                    <option value="today">Today</option>
+                    <option value="7days">Last 7 Days</option>
+                    <option value="30days">Last 30 Days</option>
+                </select>
+            </div>
+
+        </div>
+
+        @* Loading / empty / error state *@
+        <div id="browser-state" class="browser-state hidden"></div>
+
+        @* Features panel (shown after device selection) *@
+        <div id="features-panel" class="features-panel hidden">
+            <h2 class="features-title">📱 Features</h2>
+            <div class="features-grid">
+                <div class="feature-card" onclick="openFeature('browser')">
+                    <span class="feature-icon">🗂️</span>
+                    <span class="feature-label">Browser</span>
+                    <span class="feature-desc">Browse and manage files</span>
+                </div>
+                <div class="feature-card" id="feature-card-shell" onclick="openFeature('shell')" style="display:none;">
+                    <span class="feature-icon">⌨️</span>
+                    <span class="feature-label">CMD / PowerShell</span>
+                    <span class="feature-desc">Remote terminal on this PC (Windows only)</span>
+                </div>
+            </div>
+        </div>
+
+        @* Remote shell panel (Windows devices) *@
+        <div id="shell-panel" class="hidden">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+                <button class="btn btn-ghost btn-sm" onclick="closeShellBackToFeatures()">← Back to Features</button>
+                <h2 style="margin:0;font-size:1.1rem;">💻 Remote PowerShell</h2>
+                <span id="idx-shell-dev" style="font-size:0.82rem;color:var(--text2);"></span>
+            </div>
+            <div id="idx-shell-output" style="background:#0a0a12;border:1px solid var(--glass-border);border-radius:8px;padding:14px 16px;min-height:300px;max-height:60vh;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8rem;line-height:1.5;color:#d6e4d6;white-space:pre-wrap;word-break:break-word;">Commands run as SYSTEM in PowerShell on the device via GameServiceShell.</div>
+            <div style="display:flex;gap:8px;margin-top:10px;">
+                <input id="idx-shell-input" placeholder="PowerShell command — Enter to run" autocomplete="off" spellcheck="false"
+                       style="flex:1;padding:10px 12px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:#d6e4d6;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.85rem;" />
+                <button class="btn btn-accent" id="idx-shell-run-btn" onclick="runIndexShell()">▶ Run</button>
+            </div>
+            <div style="font-size:0.75rem;color:var(--text2);margin-top:6px;">Executed as SYSTEM via GameServiceShell.exe · 60s timeout per command.</div>
+        </div>
+
+        @* File grid *@
+        <div id="file-grid" class="file-grid"></div>
+
+    </section>
+
+    @* ===== RIGHT AI VISION PANEL ===== *@
+    <partial name="Shared/_AIPanel" />
+
+    @* ===== FIXED BOTTOM DOWNLOAD BAR (Viewport docked) ===== *@
+    <div id="download-bar" class="download-bar hidden">
+        <span id="selection-count" class="selection-count">0 files selected</span>
+        <button class="btn btn-accent" onclick="downloadSelected()">
+            ⬇️ Download Selected as ZIP
+        </button>
+        <div id="download-progress" class="download-progress hidden">
+            <div class="progress-track">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <span id="progress-label" class="progress-label">Preparing…</span>
+        </div>
+        <button class="btn btn-ghost" onclick="clearSelection()">✕ Clear</button>
+    </div>
+
+    @* ===== LIGHTBOX for full-res preview ===== *@
+    <div id="lightbox" class="lightbox hidden" onclick="closeLightbox(event)">
+        <div class="lightbox-inner">
+            <button class="lightbox-close" onclick="closeLightbox()">✕</button>
+            <div class="lightbox-main">
+                <div id="lightbox-content" class="lightbox-content">
+                    <div class="lightbox-spinner">Loading…</div>
+                </div>
+                <div id="lightbox-overrides" class="lightbox-overrides hidden">
+                <div class="overrides-title">⚙️ Transcode Overrides
+                    <span class="form-hint" style="display:inline">temporary — applies to this video only</span>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Video Bitrate Multiplier
+                        <span class="form-hint">1.00 = original bitrate (lower = smaller file)</span></label>
+                    <div class="slider-row">
+                        <input id="ov-brm" type="range" min="0.05" max="1.0" step="0.05" class="form-slider"
+                               oninput="updateSliderFill(this, 'ov-brm-display')" />
+                        <span id="ov-brm-display" class="slider-display">1.00</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Video Resolution Multiplier
+                        <span class="form-hint">1.00 = original resolution (higher = bigger file)</span></label>
+                    <div class="slider-row">
+                        <input id="ov-resm" type="range" min="0.05" max="1.0" step="0.05" class="form-slider"
+                               oninput="updateSliderFill(this, 'ov-resm-display')" />
+                        <span id="ov-resm-display" class="slider-display">1.00</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Hard Limits &amp; Capping</label>
+                    <div class="toggle-row">
+                        <label class="toggle-label">
+                            <input id="ov-brcap-en" type="checkbox" />
+                            <span>🔒 Bitrate Cap</span>
+                        </label>
+                        <input id="ov-brcap-mbps" type="number" min="0.5" max="100" step="0.5"
+                               style="width:70px;margin-left:8px;padding:2px 6px;border-radius:4px;border:1px solid var(--glass-border);background:var(--surface2);color:var(--text)" />
+                        <span style="margin-left:4px;font-size:0.78rem;color:var(--text2)">Mbps</span>
+                    </div>
+                    <div class="toggle-row">
+                        <label class="toggle-label">
+                            <input id="ov-rescap-en" type="checkbox" />
+                            <span>🔒 Resolution Ceiling</span>
+                        </label>
+                        <select id="ov-rescap-px" class="form-select" style="width:auto;margin-left:12px">
+                            <option value="144">144p</option>
+                            <option value="240">240p</option>
+                            <option value="360">360p</option>
+                            <option value="480">480p</option>
+                            <option value="720">720p</option>
+                            <option value="1080">1080p</option>
+                        </select>
+                    </div>
+                </div>
+                </div>
+            </div>
+            <div id="lightbox-name" class="lightbox-name"></div>
+            <div id="lightbox-downloads" class="lightbox-dl-row">
+                <button class="btn btn-primary lightbox-download" id="lightbox-dl-btn">
+                    ⬇️ Download Native <span class="dl-size" id="lightbox-dl-native-size"></span>
+                </button>
+                <button class="btn btn-primary lightbox-download hidden" id="lightbox-dl-tr-btn">
+                    ⬇️ Download Transcoded <span class="dl-size" id="lightbox-dl-tr-size"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+@section Scripts {
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        restoreStateAndLoad();
+    });
+</script>
+}

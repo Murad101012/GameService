@@ -1,0 +1,328 @@
+@page
+@model ConfigModel
+@{
+    ViewData["Title"] = "Configuration";
+}
+
+<div class="config-shell">
+    <div class="config-card glass-card">
+        <h1 class="config-title">⚙️ Device & Media Configuration</h1>
+        <p class="config-subtitle">
+            Configure global video frame positions, media thumbnail quality, transfer speed limits, disk caching, and size display options.
+        </p>
+
+        @if (Model.SuccessMessage != null)
+        {
+            <div class="alert alert-success">✅ @Model.SuccessMessage</div>
+        }
+
+        <form method="post" class="config-form" id="config-form">
+            @Html.AntiForgeryToken()
+
+            @* ── Video Thumbnail Frame ── *@
+            <div class="form-group">
+                <label asp-for="Config.VideoFrameNormalized" class="form-label">
+                    Default Video Thumbnail Frame
+                    <span class="form-hint">Normalised position (0.00 = start, 1.00 = end)</span>
+                </label>
+                <div class="slider-row">
+                    <input asp-for="Config.VideoFrameNormalized"
+                           type="range" min="0" max="1" step="0.01"
+                           class="form-slider"
+                           oninput="updateSliderFill(this, 'frame-display')" />
+                    <span id="frame-display" class="slider-display">@Model.Config.VideoFrameNormalized.ToString("F2")</span>
+                </div>
+            </div>
+
+            @* ── Thumbnail Quality (applies to both images and videos in the file list) ── *@
+            <div class="form-group">
+                <label asp-for="Config.ThumbnailQuality" class="form-label">
+                    Thumbnail Quality
+                    <span class="form-hint">0.00 = Lowres, 1.00 = High resolution (applies to both image & video thumbnails in the list)</span>
+                </label>
+                <div class="slider-row">
+                    <input asp-for="Config.ThumbnailQuality"
+                           type="range" min="0" max="1" step="0.01"
+                           class="form-slider"
+                           oninput="updateSliderFill(this, 'thumb-qual-display')" />
+                    <span id="thumb-qual-display" class="slider-display">@Model.Config.ThumbnailQuality.ToString("F2")</span>
+                </div>
+            </div>
+
+            @* ── Video Transcode: Bitrate Multiplier ── *@
+            <div class="form-group">
+                <label asp-for="Config.VideoBitrateMultiplier" class="form-label">
+                    Video Bitrate Multiplier
+                    <span class="form-hint">0.05 = minimum bitrate, 1.00 = original bitrate (lower = smaller file)</span>
+                </label>
+                <div class="slider-row">
+                    <input asp-for="Config.VideoBitrateMultiplier"
+                           type="range" min="0.05" max="1.0" step="0.05"
+                           class="form-slider"
+                           oninput="updateSliderFill(this, 'bitrate-display')" />
+                    <span id="bitrate-display" class="slider-display">@Model.Config.VideoBitrateMultiplier.ToString("F2")</span>
+                </div>
+            </div>
+
+            @* ── Video Transcode: Resolution Multiplier ── *@
+            <div class="form-group">
+                <label asp-for="Config.VideoResolutionMultiplier" class="form-label">
+                    Video Resolution Multiplier
+                    <span class="form-hint">0.05 = 5% resolution, 1.00 = original resolution (lower = smaller file)</span>
+                </label>
+                <div class="slider-row">
+                    <input asp-for="Config.VideoResolutionMultiplier"
+                           type="range" min="0.05" max="1.0" step="0.05"
+                           class="form-slider"
+                           oninput="updateSliderFill(this, 'res-display')" />
+                    <span id="res-display" class="slider-display">@Model.Config.VideoResolutionMultiplier.ToString("F2")</span>
+                </div>
+            </div>
+
+            @* ── Hard Caps ── *@
+            <div class="form-group">
+                <label class="form-label">Hard Limits &amp; Capping</label>
+                <div class="toggle-row">
+                    <label class="toggle-label">
+                        <input asp-for="Config.BitrateCappingEnabled" type="checkbox" />
+                        <span>🔒 Bitrate Cap</span>
+                    </label>
+                    <input asp-for="Config.BitrateCapMbps" type="number" min="0.5" max="100" step="0.5"
+                           style="width:70px;margin-left:8px;padding:2px 6px;border-radius:4px;border:1px solid var(--glass-border);background:var(--surface2);color:var(--text)" />
+                    <span style="margin-left:4px;font-size:0.78rem;color:var(--text2)">Mbps</span>
+                </div>
+                <div class="toggle-row">
+                    <label class="toggle-label">
+                        <input asp-for="Config.ResolutionCeilingEnabled" type="checkbox" />
+                        <span>🔒 Resolution Ceiling</span>
+                    </label>
+                    <select asp-for="Config.ResolutionCeilingPx" class="form-select" style="width:auto;margin-left:12px">
+                        <option value="144">144p</option>
+                        <option value="240">240p</option>
+                        <option value="360">360p</option>
+                        <option value="480">480p</option>
+                        <option value="720">720p</option>
+                        <option value="1080">1080p</option>
+                    </select>
+                </div>
+            </div>
+
+            @* ── Phone Screen Behavior ── *@
+            <div class="form-group">
+                <label asp-for="Config.KeepScreenOn" class="form-label">
+                    Keep Phone Screen On
+                    <span class="form-hint">ON = phone screen stays awake while the app runs (like watching a video). OFF = uses the phone's normal screen timeout.</span>
+                </label>
+                <div class="toggle-row">
+                    <label class="toggle-label">
+                        <input asp-for="Config.KeepScreenOn" type="checkbox" />
+                        <span>🔆 Keep Screen Awake</span>
+                    </label>
+                </div>
+            </div>
+
+            @* ── Transfer Speed Limiter ── *@
+            <div class="form-group">
+                <label asp-for="Config.SpeedLimitKbps" class="form-label">
+                    Transfer Speed Limit
+                    <span class="form-hint">Throttle transmission rate per file transfer from phone</span>
+                </label>
+                <select asp-for="Config.SpeedLimitKbps" class="form-select">
+                    <option value="0">Unlimited (Default)</option>
+                    <option value="10">10 KB/s</option>
+                    <option value="50">50 KB/s</option>
+                    <option value="100">100 KB/s</option>
+                    <option value="500">500 KB/s</option>
+                    <option value="1024">1 MB/s</option>
+                    <option value="5120">5 MB/s</option>
+                </select>
+            </div>
+
+            @* ── Phone Parallel Processing Cores ── *@
+            <div class="form-group">
+                <label asp-for="Config.ParallelWork" class="form-label">
+                    Phone Parallel Processing (Cores)
+                    <span class="form-hint">How many CPU cores the phone dedicates to processing multiple files at the same time. The phone computes the exact core count from its own hardware when the config is applied.</span>
+                </label>
+                <select asp-for="Config.ParallelWork" class="form-select">
+                    <option value="Low">Low (Only 2 cores)</option>
+                    <option value="Medium">Medium (Half of cores)</option>
+                    <option value="High">High (75% of cores)</option>
+                    <option value="Absolute">Absolute (All Cores)</option>
+                </select>
+            </div>
+
+            @* ── PC Disk Cache Settings ── *@
+            <div class="form-group">
+                <label asp-for="Config.CacheSizeMb" class="form-label">
+                    PC Thumbnail Cache Limit (MB)
+                    <span class="form-hint">Maximum storage allocated on PC disk for cached thumbnails</span>
+                </label>
+                <input asp-for="Config.CacheSizeMb" type="number" min="100" max="10000" step="100" class="limiter-input" />
+            </div>
+
+            @* ── Connection Routing ── *@
+            <div class="form-group">
+                <label class="form-label">
+                    Connection Routing
+                    <span class="form-hint">Choose the data path for each channel. P2P = direct link (fastest when available), Domain = Cloudflare relay. Each channel automatically falls back to the other path when its choice is unavailable.</span>
+                </label>
+
+                <div class="route-row">
+                    <span class="route-name">📄 File sending</span>
+                    <div class="route-options">
+                        <label class="route-option">
+                            <input type="radio" asp-for="Config.FileRoute" value="P2P" />
+                            <span class="route-chip p2p">P2P</span>
+                        </label>
+                        <label class="route-option">
+                            <input type="radio" asp-for="Config.FileRoute" value="Domain" />
+                            <span class="route-chip domain">Domain</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="route-row">
+                    <span class="route-name">⚙️ Config sending</span>
+                    <div class="route-options">
+                        <label class="route-option">
+                            <input type="radio" asp-for="Config.ConfigRoute" value="P2P" />
+                            <span class="route-chip p2p">P2P</span>
+                        </label>
+                        <label class="route-option">
+                            <input type="radio" asp-for="Config.ConfigRoute" value="Domain" />
+                            <span class="route-chip domain">Domain</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="route-row">
+                    <span class="route-name">🐞 Debug → PC console</span>
+                    <div class="route-options">
+                        <label class="route-option">
+                            <input type="radio" asp-for="Config.DebugRoute" value="P2P" />
+                            <span class="route-chip p2p">P2P</span>
+                        </label>
+                        <label class="route-option">
+                            <input type="radio" asp-for="Config.DebugRoute" value="Domain" />
+                            <span class="route-chip domain">Domain</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            @* ── Debug Toggle ── *@
+            <div class="form-group">
+                <label asp-for="Config.SendDebug" class="form-label">Send Debug Logs</label>
+                <label class="toggle-switch">
+                    <input asp-for="Config.SendDebug" type="checkbox" />
+                    <span class="toggle-slider"></span>
+                    <span class="toggle-label">Debug enabled</span>
+                </label>
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary btn-large">
+                    🚀 Save & Push to ALL Connected Phones
+                </button>
+            </div>
+        </form>
+    </div>
+
+    @* ── Per-Device Push & Hover Tooltip Preview Panel ── *@
+    <div class="config-card glass-card">
+        <h2 class="config-title">📱 Per-Device Configuration Push</h2>
+        <p class="config-subtitle">
+            Push configuration to an individual phone. Hover over a device to inspect its current live settings.
+        </p>
+
+        <ul class="push-device-list">
+            @if (!Model.ConnectedDevices.Any())
+            {
+                <li class="device-empty">No connected devices available for targeted push.</li>
+            }
+            else
+            {
+                @foreach (var device in Model.ConnectedDevices)
+                {
+                    <li class="push-device-item" onmouseenter="hoverDeviceConfig(this, '@device')">
+                        <span class="push-device-name">📱 @device</span>
+                        <button class="btn btn-ghost btn-sm" onclick="pushConfigToSingleDevice('@device')">
+                            Push to this Device
+                        </button>
+                        <div class="config-tooltip hidden">Loading config...</div>
+                    </li>
+                }
+            }
+        </ul>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    function updateSliderFill(input, displayId) {
+        const val = parseFloat(input.value);
+        document.getElementById(displayId).textContent = val.toFixed(2);
+        const pct = ((val - input.min) / (input.max - input.min)) * 100;
+        input.style.setProperty('--val', pct + '%');
+    }
+
+    document.querySelectorAll('.form-slider').forEach(input => {
+        const displayId = input.oninput.toString().match(/'([^']+)'/)[1];
+        updateSliderFill(input, displayId);
+    });
+
+    async function pushConfigToSingleDevice(deviceName) {
+        const form = document.getElementById('config-form');
+        const formData = new FormData(form);
+        const data = {};
+        formData.forEach((val, key) => {
+            if (key.startsWith('Config.')) {
+                let cleanKey = key.replace('Config.', '');
+                data[cleanKey] = val === 'true' ? true : (val === 'false' ? false : val);
+            }
+        });
+
+        const r = await fetch(`/api/config/push/${encodeURIComponent(deviceName)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+
+        if (r.ok) {
+            showToast(`Config pushed to ${deviceName}!`, 'ok');
+        } else {
+            showToast(`Failed to push config to ${deviceName}`, 'error');
+        }
+    }
+
+    async function hoverDeviceConfig(el, deviceName) {
+        const tooltip = el.querySelector('.config-tooltip');
+        tooltip.classList.remove('hidden');
+        try {
+            const r = await fetch(`/api/device-config/${encodeURIComponent(deviceName)}`);
+            if (r.ok) {
+                const cfg = await r.json();
+                tooltip.innerHTML = `
+                    <strong>${deviceName} Live Config:</strong><br>
+                    Frame: ${cfg.videoFrameNormalized}<br>
+                    Debug: ${cfg.sendDebug}<br>
+                    ThumbQual: ${cfg.thumbnailQuality}<br>
+                    BRM: ${cfg.videoBitrateMultiplier ?? 'N/A'}<br>
+                    ResM: ${cfg.videoResolutionMultiplier ?? 'N/A'}<br>
+                    BRCap: ${cfg.bitrateCappingEnabled ?? true} (${cfg.bitrateCapMbps ?? '3.0'} Mbps)<br>
+                    ResCap: ${cfg.resolutionCeilingEnabled ?? true} (${cfg.resolutionCeilingPx ?? 720}p)<br>
+                    Speed: ${cfg.speedLimitKbps} KB/s<br>
+                    Parallel: ${cfg.parallelWork ?? 'N/A'} (${cfg.coreSet ?? '?'}/${cfg.coreAmount ?? '?'} cores)<br>
+                    Routes: 📄${cfg.fileRoute ?? 'P2P'} · ⚙️${cfg.configRoute ?? 'Domain'} · 🐞${cfg.debugRoute ?? 'Domain'}`;
+            } else {
+                tooltip.textContent = 'Could not fetch device config';
+            }
+        } catch {
+            tooltip.textContent = 'Error fetching config';
+        }
+    }
+</script>
+}
+
+<a href="/" class="floating-back-btn">← Return to Devices List</a>

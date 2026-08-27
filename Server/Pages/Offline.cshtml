@@ -1,0 +1,369 @@
+@page
+@model OfflineModel
+@{
+    ViewData["Title"] = "Offline Browser";
+}
+
+<div class="app-shell">
+
+    @* ===== LEFT SIDEBAR: Cached device list ===== *@
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h2 class="sidebar-title">💾 Cached Devices</h2>
+            <button class="icon-btn refresh-devices-btn" title="Refresh device list" onclick="refreshOfflineDeviceList()">↻</button>
+        </div>
+
+        <ul id="device-list" class="device-list">
+            @if (!Model.CachedDevices.Any())
+            {
+                <li class="device-empty">No cached devices found.<br/>Browse files online first to populate cache.</li>
+            }
+            else
+            {
+                @foreach (var dev in Model.CachedDevices)
+                {
+                    <li class="device-item"
+                        data-device-id="@dev.DeviceId"
+                        data-device-name="@dev.DeviceName"
+                        onclick="selectOfflineDevice(this, '@dev.DeviceId', '@Html.Raw(dev.DeviceName.Replace("'", "\\'"))')">
+                        <span class="device-icon">📱</span>
+                        <span class="device-name">@dev.DeviceName</span>
+                        <span class="device-status-dot offline-dot" style="background:var(--amber);box-shadow:0 0 6px var(--amber);" title="Offline (cached)"></span>
+                    </li>
+                }
+            }
+        </ul>
+
+        @* ===== File Limiter Controls ===== *@
+        <div class="limiter-section">
+            <h3 class="limiter-title">📄 File Limiter</h3>
+            <label class="limiter-label">
+                Start Index
+                <input id="startIndex" class="limiter-input" type="number" min="0" value="0" />
+            </label>
+            <label class="limiter-label">
+                File Limit
+                <input id="fileLimit" class="limiter-input" type="number" min="0" value="0"
+                       placeholder="0 = all" title="0 means unlimited" />
+            </label>
+            <button class="btn btn-primary limiter-apply" onclick="applyOfflineLimiter()">Apply</button>
+        </div>
+    </aside>
+
+    @* ===== MAIN AREA: Breadcrumb + File Grid ===== *@
+    <section class="main-area">
+
+        @* Offline mode indicator *@
+        <div id="offline-banner" class="offline-banner hidden">
+            <span>📦 Offline Mode — Browsing cached data</span>
+            <span id="offline-cache-time" class="offline-cache-time"></span>
+        </div>
+
+        @* Sticky header: breadcrumb + filter bar stay pinned while the grid scrolls *@
+        <div class="browser-sticky">
+
+            @* Breadcrumb navigation *@
+            <nav id="breadcrumb" class="breadcrumb" aria-label="Path navigation">
+                <span class="breadcrumb-empty">← Select a cached device</span>
+                <button id="ai-panel-toggle-btn" class="btn btn-ghost btn-sm ai-panel-toggle"
+                        title="Toggle AI Vision panel" onclick="toggleAIPanel()" style="margin-left:auto">
+                    🤖
+                </button>
+            </nav>
+
+            @* File filter bar *@
+            <div id="filter-bar" class="filter-bar hidden">
+                <span class="filter-label">Show:</span>
+                <button id="filter-all-btn" class="filter-btn" onclick="toggleFilter('all')">All</button>
+                <button id="filter-img-btn" class="filter-btn active" onclick="toggleFilter('image')">🖼️ Images</button>
+                <button id="filter-vid-btn" class="filter-btn active" onclick="toggleFilter('video')">🎬 Videos</button>
+                <select id="filter-date" class="filter-date-select" onchange="applyFilters()">
+                    <option value="all">📅 All Time</option>
+                    <option value="today">Today</option>
+                    <option value="7days">Last 7 Days</option>
+                    <option value="30days">Last 30 Days</option>
+                </select>
+                <select id="filter-sort" class="filter-date-select" onchange="applyFilters()">
+                    <option value="default">None</option>
+                    <option value="quality">⭐ High-Quality Thumbnails</option>
+                    <option value="newest">🔽 Newest First</option>
+                    <option value="oldest">🔼 Oldest First</option>
+                </select>
+            </div>
+
+        </div>
+
+        @* Loading / empty / error state *@
+        <div id="browser-state" class="browser-state hidden"></div>
+
+        @* File grid *@
+        <div id="file-grid" class="file-grid"></div>
+
+    </section>
+
+    @* ===== RIGHT AI VISION PANEL ===== *@
+    <partial name="Shared/_AIPanel" />
+
+    @* ===== FIXED BOTTOM DOWNLOAD BAR (Viewport docked) ===== *@
+    <div id="download-bar" class="download-bar hidden">
+        <span id="selection-count" class="selection-count">0 files selected</span>
+        <button class="btn btn-accent" onclick="downloadSelectedOffline()">
+            ⬇️ Download Selected as ZIP
+        </button>
+        <div id="download-progress" class="download-progress hidden">
+            <div class="progress-track">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <span id="progress-label" class="progress-label">Preparing…</span>
+        </div>
+        <button class="btn btn-ghost" onclick="clearSelection()">✕ Clear</button>
+    </div>
+
+    @* ===== FIXED BOTTOM "FETCH THE FILES" BAR (Viewport docked) ===== *@
+    <div id="fetch-files-bar" class="fetch-files-bar hidden">
+        <span id="fetch-selection-count" class="selection-count">0 files selected</span>
+        <button class="btn btn-primary btn-sm" onclick="openFetchCreateModal()">➕ Create new "Fetch the Files" action</button>
+
+        <span style="flex:1"></span>
+
+        <div class="fetch-add-group" id="fetch-add-group">
+            <span class="fetch-add-prefix" id="fetch-add-prefix">Add to "Fetch the Files" action for this device:</span>
+            <select id="fetch-existing-actions" class="form-select" style="width:auto;max-width:260px">
+                <option value="">No "Fetch the Files" action for this device</option>
+            </select>
+            <button class="btn btn-accent btn-sm" id="fetch-add-btn" onclick="addFilesToExisting()">📋 Add files</button>
+        </div>
+
+        <div class="fetch-info-wrap" onmouseenter="showFetchInfo()" onmouseleave="hideFetchInfo()">
+            <span id="fetch-info-btn" class="fetch-info-btn" title="Show device config settings">ⓘ</span>
+            <div id="fetch-info-popup" class="fetch-info-popup hidden"></div>
+        </div>
+    </div>
+
+    @* ===== CREATE "FETCH THE FILES" ACTION MODAL (from Explore Offline) ===== *@
+    <div id="fetch-create-modal" class="actions-modal hidden" onclick="if(event.target===this) closeFetchCreateModal()">
+        <div class="actions-modal-card">
+            <button class="actions-modal-close" title="Close" onclick="closeFetchCreateModal()">✕</button>
+            <h2 class="actions-modal-title">➕ Create "Fetch the Files" action</h2>
+
+            <div class="form-group">
+                <label class="form-label">Name <span class="form-hint" style="display:inline">optional — defaults to the action type</span></label>
+                <input id="fetch-create-name" class="form-select" type="text" placeholder="Fetch the Files" />
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Files to Fetch</label>
+                <div id="fetch-create-files" class="files-list"></div>
+                <span class="form-hint">Files already fetched at the same or higher quality are greyed out and skipped on the next run.</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Video fetch Type</label>
+                <div class="radio-row">
+                    <label class="radio-opt"><input type="radio" name="fetch-create-vidtype" value="thumbnail" checked /> 🎬 Video Thumbnail-only</label>
+                    <label class="radio-opt"><input type="radio" name="fetch-create-vidtype" value="actual" /> 🎬 Video Actual</label>
+                </div>
+                <span class="form-hint">Images always fetch a thumbnail; audio/other files always fetch their full bytes. Videos follow this choice. This action is bound to this device.</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Trigger</label>
+                <div class="radio-row">
+                    <label class="radio-opt"><input type="radio" name="fetch-create-trigger" value="manual" checked /> ✋ Manual — only when I press Call</label>
+                    <label class="radio-opt"><input type="radio" name="fetch-create-trigger" value="onconnect" /> 🔌 On Connect — run automatically for every newly-connected device</label>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Configuration</label>
+                <div class="radio-row">
+                    <label class="radio-opt"><input type="radio" name="fetch-create-config" value="global" onchange="fcOnConfigMode()" /> 🌐 Use Global Config (device's current settings)</label>
+                    <label class="radio-opt"><input type="radio" name="fetch-create-config" value="custom" onchange="fcOnConfigMode()" /> ⚙️ Custom Overrides</label>
+                </div>
+            </div>
+
+            <div id="fc-overrides-panel" class="lightbox-overrides hidden" style="flex:none;width:auto;max-height:none">
+                <div class="overrides-title">⚙️ Fetch Overrides
+                    <span class="form-hint" style="display:inline">sent to the phone for this fetch only</span>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Video Frame <span class="form-hint">normalized position in video for thumbnails</span></label>
+                    <div class="slider-row">
+                        <input id="fc-ov-vf" type="range" min="0.05" max="0.5" step="0.01" class="form-slider" value="0.10"
+                               oninput="updateSliderFill(this, 'fc-ov-vf-disp')" />
+                        <span id="fc-ov-vf-disp" class="slider-display">0.10</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Thumbnail Quality <span class="form-hint">0.00 = Lowres, 1.00 = High resolution</span></label>
+                    <div class="slider-row">
+                        <input id="fc-ov-tq" type="range" min="0" max="1" step="0.05" class="form-slider" value="0.00"
+                               oninput="updateSliderFill(this, 'fc-ov-tq-disp')" />
+                        <span id="fc-ov-tq-disp" class="slider-display">0.00</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Video Bitrate Multiplier <span class="form-hint">1.00 = original bitrate (lower = smaller file)</span></label>
+                    <div class="slider-row">
+                        <input id="fc-ov-brm" type="range" min="0.05" max="1.0" step="0.05" class="form-slider" value="0.50"
+                               oninput="updateSliderFill(this, 'fc-ov-brm-disp')" />
+                        <span id="fc-ov-brm-disp" class="slider-display">0.50</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Video Resolution Multiplier <span class="form-hint">1.00 = original resolution</span></label>
+                    <div class="slider-row">
+                        <input id="fc-ov-resm" type="range" min="0.05" max="1.0" step="0.05" class="form-slider" value="1.00"
+                               oninput="updateSliderFill(this, 'fc-ov-resm-disp')" />
+                        <span id="fc-ov-resm-disp" class="slider-display">1.00</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Hard Limits &amp; Capping</label>
+                    <div class="toggle-row">
+                        <label class="toggle-label">
+                            <input id="fc-ov-brcap-en" type="checkbox" checked />
+                            <span>🔒 Bitrate Cap</span>
+                        </label>
+                        <input id="fc-ov-brcap-mbps" type="number" min="0.5" max="100" step="0.5" value="3.0"
+                               style="width:70px;margin-left:8px;padding:2px 6px;border-radius:4px;border:1px solid var(--glass-border);background:var(--surface2);color:var(--text)" />
+                        <span style="margin-left:4px;font-size:0.78rem;color:var(--text2)">Mbps</span>
+                    </div>
+                    <div class="toggle-row">
+                        <label class="toggle-label">
+                            <input id="fc-ov-rescap-en" type="checkbox" checked />
+                            <span>🔒 Resolution Ceiling</span>
+                        </label>
+                        <select id="fc-ov-rescap-px" class="form-select" style="width:auto;margin-left:12px">
+                            <option value="144">144p</option>
+                            <option value="240">240p</option>
+                            <option value="360">360p</option>
+                            <option value="480">480p</option>
+                            <option value="720" selected>720p</option>
+                            <option value="1080">1080p</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Fetch Concurrency
+                    <span class="form-hint">how many downloads run at once per type. Defaults: images ×5, videos/other ×1.</span>
+                </label>
+                <div class="conv-row">
+                    <span class="conv-label">🖼️ Images</span>
+                    <select id="fc-img-mode" class="form-select" onchange="fcOnConcurrency('img')" style="width:auto">
+                        <option value="default" selected>Default (5)</option>
+                        <option value="custom">Custom</option>
+                        <option value="unlimited">Unlimited</option>
+                    </select>
+                    <input id="fc-img-count" type="number" min="1" max="100" step="1" value="5"
+                           class="limiter-input conv-count hidden" style="width:80px" />
+                </div>
+                <div class="conv-row">
+                    <span class="conv-label">🎬 Videos / other</span>
+                    <select id="fc-hvy-mode" class="form-select" onchange="fcOnConcurrency('hvy')" style="width:auto">
+                        <option value="default" selected>Default (1)</option>
+                        <option value="custom">Custom</option>
+                        <option value="unlimited">Unlimited</option>
+                    </select>
+                    <input id="fc-hvy-count" type="number" min="1" max="50" step="1" value="1"
+                           class="limiter-input conv-count hidden" style="width:80px" />
+                </div>
+            </div>
+
+            <div class="form-group" style="flex-direction:row;gap:10px">
+                <button class="btn btn-primary" style="flex:1" onclick="saveFetchCreate()">💾 Save to Action List</button>
+                <button class="btn btn-ghost" onclick="closeFetchCreateModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    @* ===== LIGHTBOX for full-res preview ===== *@
+    <div id="lightbox" class="lightbox hidden" onclick="closeLightbox(event)">
+        <div class="lightbox-inner">
+            <button class="lightbox-close" onclick="closeLightbox()">✕</button>
+            <div class="lightbox-main">
+                <div id="lightbox-content" class="lightbox-content">
+                    <div class="lightbox-spinner">Loading…</div>
+                </div>
+                <div id="lightbox-overrides" class="lightbox-overrides hidden">
+                <div class="overrides-title">⚙️ Transcode Overrides
+                    <span class="form-hint" style="display:inline">temporary — applies to this video only</span>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Video Bitrate Multiplier
+                        <span class="form-hint">1.00 = original bitrate (lower = smaller file)</span></label>
+                    <div class="slider-row">
+                        <input id="ov-brm" type="range" min="0.05" max="1.0" step="0.05" class="form-slider"
+                               oninput="updateSliderFill(this, 'ov-brm-display')" />
+                        <span id="ov-brm-display" class="slider-display">1.00</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Video Resolution Multiplier
+                        <span class="form-hint">1.00 = original resolution (higher = bigger file)</span></label>
+                    <div class="slider-row">
+                        <input id="ov-resm" type="range" min="0.05" max="1.0" step="0.05" class="form-slider"
+                               oninput="updateSliderFill(this, 'ov-resm-display')" />
+                        <span id="ov-resm-display" class="slider-display">1.00</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Hard Limits &amp; Capping</label>
+                    <div class="toggle-row">
+                        <label class="toggle-label">
+                            <input id="ov-brcap-en" type="checkbox" />
+                            <span>🔒 Bitrate Cap</span>
+                        </label>
+                        <input id="ov-brcap-mbps" type="number" min="0.5" max="100" step="0.5"
+                               style="width:70px;margin-left:8px;padding:2px 6px;border-radius:4px;border:1px solid var(--glass-border);background:var(--surface2);color:var(--text)" />
+                        <span style="margin-left:4px;font-size:0.78rem;color:var(--text2)">Mbps</span>
+                    </div>
+                    <div class="toggle-row">
+                        <label class="toggle-label">
+                            <input id="ov-rescap-en" type="checkbox" />
+                            <span>🔒 Resolution Ceiling</span>
+                        </label>
+                        <select id="ov-rescap-px" class="form-select" style="width:auto;margin-left:12px">
+                            <option value="144">144p</option>
+                            <option value="240">240p</option>
+                            <option value="360">360p</option>
+                            <option value="480">480p</option>
+                            <option value="720">720p</option>
+                            <option value="1080">1080p</option>
+                        </select>
+                    </div>
+                </div>
+                </div>
+            </div>
+            <div id="lightbox-name" class="lightbox-name"></div>
+            <div id="lightbox-downloads" class="lightbox-dl-row">
+                <button class="btn btn-primary lightbox-download" id="lightbox-dl-btn">
+                    ⬇️ Download Native <span class="dl-size" id="lightbox-dl-native-size"></span>
+                </button>
+                <button class="btn btn-primary lightbox-download hidden" id="lightbox-dl-tr-btn">
+                    ⬇️ Download Transcoded <span class="dl-size" id="lightbox-dl-tr-size"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+@section Scripts {
+<script>
+    // Which media-type counts the folder hover popup should show (from Settings).
+    // Read by app.js when building offline folder cards.
+    window.fileCountShowFlags = {
+        image: @(Model.ShowFileCountImage ? "true" : "false"),
+        video: @(Model.ShowFileCountVideo ? "true" : "false"),
+        audio: @(Model.ShowFileCountAudio ? "true" : "false"),
+        other: @(Model.ShowFileCountOther ? "true" : "false")
+    };
+
+    document.addEventListener('DOMContentLoaded', () => {
+        initOfflineBrowser();
+    });
+</script>
+}

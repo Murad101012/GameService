@@ -1,0 +1,22 @@
+# --- Python Virtual Environment ---
+Server/ai-venv/
+
+# --- .NET Build Artifacts ---
+Server/bin/
+Server/obj/
+
+# --- Specific Server Data ---
+Server/Services/DataContainers/
+
+# --- Build Folder Rules ---
+Build/WindowsBuild/*
+!Build/WindowsBuild/AgentExe/
+!Build/WindowsBuild/AgentExe/**
+
+Build/AndroidBuild/*
+
+# --- Unity Project Ignored Folders ---
+DancingLineClone/Library/
+
+# --- Unity Crash Dumps ---
+DancingLineClone/mono_crash.mem.*

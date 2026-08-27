@@ -1,0 +1,340 @@
+@page
+@model UpdateModel
+@{
+    ViewData["Title"] = "Update Service";
+}
+
+<div class="container" style="max-width:1100px;margin:24px auto;padding:0 16px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;border-bottom:1px solid var(--glass-border);padding-bottom:16px;">
+        <div>
+            <h1 style="margin:0;font-size:1.8rem;display:flex;align-items:center;gap:10px;">
+                <span>🔄</span> Update Service &amp; Remote Agent Manager
+            </h1>
+            <p style="margin:4px 0 0;color:var(--text2);font-size:0.9rem;">
+                Silently push new Core Agent binary/script updates, manage device backup versions, and perform instant rollbacks across Windows and Android devices.
+            </p>
+        </div>
+    </div>
+
+    @* ===== CONNECTED DEVICES OVERVIEW ===== *@
+    <div style="background:var(--surface2);border:1px solid var(--glass-border);border-radius:8px;padding:16px;margin-bottom:24px;">
+        <h2 style="margin:0 0 12px;font-size:1.2rem;">📱 Connected Active Devices</h2>
+        <div id="update-devices-grid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(240px, 1fr));gap:12px;">
+            @if (!Model.ConnectedDevices.Any())
+            {
+                <div style="color:var(--text2);font-style:italic;">No devices currently connected.</div>
+            }
+            else
+            {
+                @foreach (var dev in Model.ConnectedDevices)
+                {
+                    bool isWin = string.Equals(dev.Platform, "Windows", StringComparison.OrdinalIgnoreCase);
+                    string iconUrl = isWin ? "/Images/windows-icon.png" : "/Images/R.png";
+                    <div style="background:var(--surface);border:1px solid var(--glass-border);border-radius:6px;padding:12px;display:flex;align-items:center;gap:12px;">
+                        <img src="@iconUrl" alt="@dev.Platform" style="width:32px;height:32px;object-fit:contain;" />
+                        <div>
+                            <div style="font-weight:600;font-size:0.95rem;">@dev.DeviceName</div>
+                            <div style="font-size:0.8rem;color:var(--text2);">OS: @dev.Platform</div>
+                        </div>
+                    </div>
+                }
+            }
+        </div>
+    </div>
+
+    @* ===== PUSH UPDATE PANEL ===== *@
+    <div style="background:var(--surface2);border:1px solid var(--glass-border);border-radius:8px;padding:20px;margin-bottom:24px;">
+        <h2 style="margin:0 0 16px;font-size:1.2rem;">🚀 Deploy Core Agent Update</h2>
+        
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+            <div>
+                <label style="display:block;margin-bottom:6px;font-weight:500;font-size:0.88rem;">Target Device (updates use the Updater's own connection — independent of the Device List)</label>
+                <input id="updateTargetSelect" list="updateTargetOptions" placeholder="e.g. DESKTOP-ABC_PC (or type any device name)" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:var(--text);" />
+                <datalist id="updateTargetOptions">
+                    <option value="__ALL__">⚡ Update All Connected Devices</option>
+                    @foreach (var dev in Model.ConnectedDevices)
+                    {
+                        <option value="@dev.DeviceName">@dev.DeviceName (@dev.Platform — online)</option>
+                    }
+                    @foreach (var upd in Model.UpdaterDevices)
+                    {
+                        <option value="@upd">@upd (Updater connected — device offline)</option>
+                    }
+                </datalist>
+                @if (Model.UpdaterDevices.Count > 0)
+                {
+                    <div style="font-size:0.8rem;color:var(--green,#4cd964);margin-top:6px;">
+                        ✓ Update Service reached: @string.Join(", ", Model.UpdaterDevices)
+                        <span style="color:var(--text2);">(these work even when the device is not in the Device List)</span>
+                    </div>
+                }
+            </div>
+            <div>
+                <label style="display:block;margin-bottom:6px;font-weight:500;font-size:0.88rem;">Version Identifier (Optional)</label>
+                <input id="updateVersionId" type="text" placeholder="Auto-generated timestamp if empty" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:var(--text);" />
+            </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+            <div>
+                <label style="display:block;margin-bottom:6px;font-weight:500;font-size:0.88rem;">What to Update</label>
+                <select id="updateModeSelect" onchange="onUpdateModeChange()" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:var(--text);">
+                    <option value="Add">➕ Add new service (.exe)</option>
+                    <option value="Replace">🔁 Replace service</option>
+                </select>
+            </div>
+            <div id="updateFileNameWrap">
+                <label id="updateFileNameLabel" style="display:block;margin-bottom:6px;font-weight:500;font-size:0.88rem;">New service file name</label>
+                <input id="updateFileName" type="text" list="installedExeOptions" placeholder="e.g. MyAgent.exe (auto-filled from chosen file)" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:var(--text);" />
+                <datalist id="installedExeOptions"></datalist>
+                <div id="installedExeHint" style="font-size:0.78rem;color:var(--text2);margin-top:4px;"></div>
+            </div>
+        </div>
+
+        <div style="margin-bottom:16px;">
+            <label style="display:block;margin-bottom:6px;font-weight:500;font-size:0.88rem;">Latest .exe Binary (base64-encoded before sending)</label>
+            <input id="updateExeFile" type="file" accept=".exe" onchange="onExeFileChosen()" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:var(--text);" />
+            <div id="updateExeInfo" style="font-size:0.8rem;color:var(--text2);margin-top:4px;">No file selected.</div>
+        </div>
+
+        <div style="display:flex;gap:12px;justify-content:flex-end;">
+            <button class="btn btn-secondary" onclick="document.getElementById('updateExeFile').value='';onExeFileChosen()">Clear</button>
+            <button class="btn btn-primary" onclick="pushAgentUpdate()">🚀 Push Update</button>
+        </div>
+    </div>
+
+    @* ===== BACKUP & ROLLBACK MANAGER ===== *@
+    <div style="background:var(--surface2);border:1px solid var(--glass-border);border-radius:8px;padding:20px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+            <h2 style="margin:0;font-size:1.2rem;">⏪ Device Backup &amp; Rollback History</h2>
+            <div style="display:flex;gap:8px;">
+                <select id="backupDeviceSelect" onchange="fetchDeviceBackups()" style="padding:6px 10px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:var(--text);">
+                    <option value="">Select Device...</option>
+                    @foreach (var dev in Model.ConnectedDevices)
+                    {
+                        <option value="@dev.DeviceName">@dev.DeviceName (@dev.Platform)</option>
+                    }
+                </select>
+                <button class="btn btn-ghost btn-sm" onclick="fetchDeviceBackups()">↻ Refresh</button>
+                <button class="btn btn-danger btn-sm" onclick="purgeDeviceBackups()">🧹 Purge All Backups</button>
+            </div>
+        </div>
+
+        <div id="backup-list-container">
+            <div style="color:var(--text2);font-style:italic;padding:12px;">Select a device above to view saved Core Agent backups.</div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    let selectedExeBase64 = null;
+    let selectedExeName = '';
+
+    // Ask the target PC's Updater which agent .exe files it hosts and offer them
+    // as suggestions for the "replace" filename field.
+    async function fetchInstalledExes() {
+        const target = document.getElementById('updateTargetSelect').value.trim();
+        const dl = document.getElementById('installedExeOptions');
+        const hint = document.getElementById('installedExeHint');
+        dl.innerHTML = '';
+        if (!target || target === '__ALL__') { hint.textContent = ''; return; }
+        try {
+            const res = await fetch(`/api/update/exes?device=${encodeURIComponent(target)}`);
+            const data = await res.json();
+            if (data.success && Array.isArray(data.exes) && data.exes.length > 0) {
+                for (const exe of data.exes) {
+                    const opt = document.createElement('option');
+                    opt.value = exe;
+                    dl.appendChild(opt);
+                }
+                hint.textContent = `On ${target}: ${data.exes.join(', ')}`;
+            } else {
+                hint.textContent = target ? `No agent .exe inventory received from ${target} yet.` : '';
+            }
+        } catch {
+            hint.textContent = '';
+        }
+    }
+    document.getElementById('updateTargetSelect').addEventListener('change', fetchInstalledExes);
+    fetchInstalledExes();
+
+    function onUpdateModeChange() {
+        const mode = document.getElementById('updateModeSelect').value || 'Add';
+        const label = document.getElementById('updateFileNameLabel');
+        if (label) label.textContent = (mode === 'Replace')
+            ? 'Service to replace (pick an installed .exe)'
+            : 'New service file name';
+        if (!selectedExeName) {
+            document.getElementById('updateFileName').value = '';
+        }
+        if (mode === 'Replace') {
+            fetchInstalledExes();
+        }
+    }
+
+    function onExeFileChosen() {
+        const input = document.getElementById('updateExeFile');
+        const info = document.getElementById('updateExeInfo');
+        const file = input.files && input.files[0];
+
+        if (!file) {
+            selectedExeBase64 = null;
+            selectedExeName = '';
+            info.textContent = 'No file selected.';
+            return;
+        }
+
+        selectedExeName = file.name;
+        const reader = new FileReader();
+        reader.onload = () => {
+            selectedExeBase64 = reader.result.split(',')[1] || '';
+            info.textContent = `${file.name} (${file.size} bytes) loaded — ready to send.`;
+            if (!document.getElementById('updateFileName').value.trim() &&
+                document.getElementById('updateModeSelect').value !== 'Replace') {
+                document.getElementById('updateFileName').value = file.name;
+            }
+        };
+        reader.onerror = () => {
+            selectedExeBase64 = null;
+            info.textContent = 'Failed to read file.';
+        };
+        reader.readAsDataURL(file);
+    }
+
+    async function pushAgentUpdate() {
+        const target = document.getElementById('updateTargetSelect').value;
+        const versionId = document.getElementById('updateVersionId').value.trim();
+        const mode = document.getElementById('updateModeSelect').value;
+        const fileName = document.getElementById('updateFileName').value.trim();
+
+        if (!selectedExeBase64) {
+            alert('Please choose the latest .exe file before pushing.');
+            return;
+        }
+        if (!/\.exe$/i.test(fileName)) {
+            alert(mode === 'Replace'
+                ? 'Pick or type the name of the installed service (.exe) to replace.'
+                : 'Enter the new service file name (.exe).');
+            return;
+        }
+
+        const isAll = target === '__ALL__';
+        // Both UI modes use the backend "NewExe" path: backup -> kill old ->
+        // write new binary -> (re)create task -> start fresh.
+        const body = {
+            TargetDevice: isAll ? '' : target,
+            VersionId: versionId,
+            Content: selectedExeBase64,
+            IsAllDevices: isAll,
+            Mode: 'NewExe',
+            FileName: fileName || selectedExeName
+        };
+
+        const btn = document.querySelector('button[onclick="pushAgentUpdate()"]');
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ Sending...'; }
+
+        try {
+            const res = await fetch('/api/update/push', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const data = await res.json();
+            if (data.success) {
+                alert(data.message || 'Update pushed successfully!');
+            } else {
+                alert('Error: ' + (data.message || 'Push failed'));
+            }
+        } catch (err) {
+            alert('Network error: ' + err.message);
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '🚀 Push Update'; }
+        }
+    }
+
+    async function fetchDeviceBackups() {
+        const device = document.getElementById('backupDeviceSelect').value;
+        const container = document.getElementById('backup-list-container');
+        if (!device) {
+            container.innerHTML = '<div style="color:var(--text2);font-style:italic;padding:12px;">Select a device above to view saved Core Agent backups.</div>';
+            return;
+        }
+
+        container.innerHTML = '<div style="padding:12px;">Loading backups...</div>';
+
+        try {
+            const res = await fetch(`/api/update/backups?device=${encodeURIComponent(device)}`);
+            const data = await res.json();
+            if (data.success && data.backups && data.backups.length > 0) {
+                let html = `
+                <table style="width:100%;border-collapse:collapse;margin-top:8px;">
+                    <thead>
+                        <tr style="border-bottom:1px solid var(--glass-border);text-align:left;font-size:0.85rem;color:var(--text2);">
+                            <th style="padding:8px;">Version ID</th>
+                            <th style="padding:8px;">Created At</th>
+                            <th style="padding:8px;">Path</th>
+                            <th style="padding:8px;text-align:right;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
+                for (const b of data.backups) {
+                    html += `
+                        <tr style="border-bottom:1px solid var(--glass-border);font-size:0.88rem;">
+                            <td style="padding:8px;font-weight:600;">${b.versionId}</td>
+                            <td style="padding:8px;">${b.createdAt || '-'}</td>
+                            <td style="padding:8px;font-family:monospace;font-size:0.8rem;color:var(--text2);">${b.filePath || '-'}</td>
+                            <td style="padding:8px;text-align:right;">
+                                <button class="btn btn-primary btn-xs" onclick="rollbackToVersion('${device}', '${b.versionId}')">⏪ Rollback</button>
+                            </td>
+                        </tr>`;
+                }
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            } else {
+                container.innerHTML = '<div style="color:var(--text2);font-style:italic;padding:12px;">No backup versions found on this device yet. Backups are created automatically prior to updates.</div>';
+            }
+        } catch (err) {
+            container.innerHTML = `<div style="color:var(--red);padding:12px;">Failed to fetch backups: ${err.message}</div>`;
+        }
+    }
+
+    async function rollbackToVersion(device, versionId) {
+        if (!confirm(`Are you sure you want to rollback ${device} to backup version ${versionId}?`)) return;
+
+        try {
+            const res = await fetch('/api/update/rollback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ TargetDevice: device, VersionId: versionId })
+            });
+            const data = await res.json();
+            alert(data.message || 'Rollback request sent!');
+        } catch (err) {
+            alert('Error initiating rollback: ' + err.message);
+        }
+    }
+
+    async function purgeDeviceBackups() {
+        const device = document.getElementById('backupDeviceSelect').value;
+        if (!device) {
+            alert('Please select a device first.');
+            return;
+        }
+        if (!confirm(`Are you sure you want to purge ALL backup versions for ${device}? This action cannot be undone.`)) return;
+
+        try {
+            const res = await fetch('/api/update/purge-backups', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ TargetDevice: device })
+            });
+            const data = await res.json();
+            alert(data.message || 'Purge backups command sent!');
+            setTimeout(fetchDeviceBackups, 1000);
+        } catch (err) {
+            alert('Error purging backups: ' + err.message);
+        }
+    }
+</script>
+}

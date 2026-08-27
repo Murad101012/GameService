@@ -1,0 +1,16 @@
+﻿<Solution>
+  <Project Path="Editor.csproj" />
+  <Project Path="Interfaces.csproj" />
+  <Project Path="Gameplay.csproj" />
+  <Project Path="Core.csproj" />
+  <Project Path="DataContainer.csproj" />
+  <Project Path="Camera.csproj" />
+  <Project Path="Plugins.csproj" />
+  <Project Path="Player.csproj" />
+  <Project Path="Animation.csproj" />
+  <Project Path="Controllers.csproj" />
+  <Project Path="Assembly-CSharp.csproj" />
+  <Project Path="Input.csproj" />
+  <Project Path="ElementReferences.csproj" />
+  <Project Path="Audio.csproj" />
+</Solution>

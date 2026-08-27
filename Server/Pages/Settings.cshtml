@@ -1,0 +1,182 @@
+@page
+@model SettingsModel
+@{
+    ViewData["Title"] = "Settings";
+}
+
+<div class="config-shell">
+    <div class="config-card glass-card">
+        <h1 class="config-title">🔧 Settings</h1>
+        <p class="config-subtitle">PC-side application settings.</p>
+
+        @if (Model.SuccessMessage != null)
+        {
+            <div class="alert alert-success">✅ @Model.SuccessMessage</div>
+        }
+        @if (Model.ErrorMessage != null)
+        {
+            <div class="alert alert-danger">❌ @Model.ErrorMessage</div>
+        }
+
+        <form method="post" class="config-form">
+            @Html.AntiForgeryToken()
+
+            @* ── Server Port ── *@
+            <div class="form-group">
+                <label asp-for="Port" class="form-label">
+                    Server Port
+                    <span class="form-hint">Port the web UI / server listens on. Changing it restarts the server and redirects you to the new port.</span>
+                </label>
+                <input asp-for="Port" type="number" min="1" max="65535" step="1" class="limiter-input" style="max-width:160px" />
+            </div>
+
+            @* ── Allow LAN Access (open WebUI from phone on same Wi-Fi) ── *@
+            <div class="form-group">
+                <label asp-for="AllowLanAccess" class="form-label">
+                    Allow LAN Access (open WebUI from other devices on same network)
+                    <span class="form-hint">
+                        OFF = only this PC (http://127.0.0.1:port) can open the WebUI. ON = any device on the same Wi-Fi / LAN (private IPs 192.168.x.x, 10.x.x.x, etc.) can open it. The server restarts when you toggle this. Public internet IPs are always blocked — only same-network private IPs are allowed.
+                    </span>
+                </label>
+                <div class="toggle-row">
+                    <label class="toggle-label">
+                        <input asp-for="AllowLanAccess" type="checkbox" />
+                        <span>📱 Allow phones / other PCs on same network to open the WebUI</span>
+                    </label>
+                </div>
+                @if (Model.AllowLanAccess)
+                {
+                    <div style="margin-top:10px;padding:10px 12px;background:var(--surface2);border:1px solid var(--glass-border);border-radius:6px;font-size:0.85rem;">
+                        <div style="font-weight:600;margin-bottom:6px;">📡 Open on phone (same Wi-Fi):</div>
+                        @if (Model.LanUrls != null && Model.LanUrls.Any())
+                        {
+                            foreach (var url in Model.LanUrls)
+                            {
+                                <div><a href="@url" target="_blank">@url</a></div>
+                            }
+                        }
+                        else
+                        {
+                            <div style="color:var(--text2);">No private LAN IP detected yet — try http://&lt;your-pc-ip&gt;:@Model.Port (find it with <code>ipconfig</code> on Windows or <code>ip addr</code> on Linux)</div>
+                        }
+                        <div style="color:var(--text2);font-size:0.78rem;margin-top:6px;">Tip: Phone and PC must be on the same Wi-Fi. Public internet cannot reach it.</div>
+                    </div>
+                }
+                else
+                {
+                    <div style="margin-top:8px;color:var(--text2);font-size:0.82rem;">Currently: only <code>http://127.0.0.1:@Model.Port</code> works.</div>
+                }
+            </div>
+
+            @* ── Device URLs (Dolphin WebDAV / HTTPS) ── *@
+            <div class="form-group">
+                <label asp-for="EnableWebDavUrls" class="form-label">
+                    Enable Device URLs (Dolphin WebDAV / HTTPS)
+                    <span class="form-hint">
+                        OFF (default) = the FULL / LOWRES links shown at connect are not
+                        displayed and the server rejects them with 403. ON = the links are
+                        printed on connect, sent to the phone, and served by the server.
+                    </span>
+                </label>
+                <div class="toggle-row">
+                    <label class="toggle-label">
+                        <input asp-for="EnableWebDavUrls" type="checkbox" />
+                        <span>🌐 Serve Dolphin (WebDAV) / HTTPS device URLs</span>
+                    </label>
+                </div>
+            </div>
+
+            @* ── Media Types to Cache ── *@
+            <div class="form-group">
+                <label class="form-label">Media Types to Cache</label>
+                <div class="checkbox-grid">
+                    <label class="toggle-switch">
+                        <input asp-for="CacheImages" type="checkbox" />
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">🖼️ Images</span>
+                    </label>
+                    <label class="toggle-switch">
+                        <input asp-for="CacheVideos" type="checkbox" />
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">🎬 Videos</span>
+                    </label>
+                    <label class="toggle-switch">
+                        <input asp-for="CacheAudio" type="checkbox" />
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">🎵 Audio</span>
+                    </label>
+                    <label class="toggle-switch">
+                        <input asp-for="CacheFiles" type="checkbox" />
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">📄 Other Files</span>
+                    </label>
+                </div>
+            </div>
+
+            @* ── Size Display Mode ── *@
+            <div class="form-group">
+                <label asp-for="SizeDisplayMode" class="form-label">File Size Display Mode</label>
+                <select asp-for="SizeDisplayMode" class="form-select">
+                    <option value="both">Both (Original → Processed)</option>
+                    <option value="original">Original Size Only</option>
+                    <option value="processed">Processed Size Only</option>
+                </select>
+            </div>
+
+            @* ── Show Files Amount (offline folder hover popup) ── *@
+            <div class="form-group">
+                <label class="form-label">
+                    Show Files Amount
+                    <span class="form-hint">
+                        While exploring offline, hovering a folder shows how many files of each
+                        selected type are in it. The popup appears after a 2 second hover.
+                    </span>
+                </label>
+                <div class="checkbox-grid">
+                    <label class="toggle-switch">
+                        <input asp-for="ShowFileCountImage" type="checkbox" />
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">🖼️ Image</span>
+                    </label>
+                    <label class="toggle-switch">
+                        <input asp-for="ShowFileCountVideo" type="checkbox" />
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">🎬 Video</span>
+                    </label>
+                    <label class="toggle-switch">
+                        <input asp-for="ShowFileCountAudio" type="checkbox" />
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">🎵 Audio</span>
+                    </label>
+                    <label class="toggle-switch">
+                        <input asp-for="ShowFileCountOther" type="checkbox" />
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">📄 Other files</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label asp-for="SizeDisplayTarget" class="form-label">Apply Size Display To</label>
+                <select asp-for="SizeDisplayTarget" class="form-select">
+                    <option value="both">Both Images & Videos</option>
+                    <option value="image">Only Images</option>
+                    <option value="video">Only Videos</option>
+                </select>
+            </div>
+
+            <button type="submit" class="btn btn-primary">💾 Save Settings</button>
+        </form>
+    </div>
+</div>
+
+@if (Model.RedirectPort > 0)
+{
+    <script>
+        (function () {
+            setTimeout(function () {
+                window.location.href = window.location.protocol + '//' + window.location.hostname + ':' + @Model.RedirectPort + '/Settings';
+            }, 2500);
+        })();
+    </script>
+}

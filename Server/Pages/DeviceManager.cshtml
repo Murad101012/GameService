@@ -1,0 +1,1351 @@
+@page
+@model DeviceManagerModel
+@{
+    ViewData["Title"] = "Device Manager";
+}
+
+<div class="app-shell">
+
+    @* ===== LEFT SIDEBAR: Device list ===== *@
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h2 class="sidebar-title">Devices</h2>
+            <button class="icon-btn refresh-devices-btn" title="Refresh device list" onclick="refreshDMDeviceList()">↻</button>
+        </div>
+
+        <ul id="dm-device-list" class="device-list" data-mode="devicemanager">
+            @if (!Model.ConnectedDevices.Any() && !Model.UpdaterDevices.Any())
+            {
+                <li class="device-empty">No devices connected</li>
+            }
+            else
+            {
+                @foreach (var dev in Model.ConnectedDevices)
+                {
+                    bool isWin = string.Equals(dev.Platform, "Windows", StringComparison.OrdinalIgnoreCase);
+                    string iconUrl = isWin ? "/Images/windows-icon.png" : "/Images/R.png";
+                    <li class="device-item"
+                        data-device="@dev.DeviceName"
+                        onclick="dmSelectDevice(this, '@Html.Raw(dev.DeviceName.Replace("'", "\\'"))')">
+                        <span class="device-icon">
+                            <img src="@iconUrl" class="device-icon-img" alt="@dev.Platform" style="width:20px;height:20px;vertical-align:middle;object-fit:contain;" />
+                        </span>
+                        <span class="device-name">@dev.DeviceName</span>
+                        <span class="link-tag" title="Connected">
+                            <span class="link-part p2p-part up">P2P</span><span class="link-sep">/</span>
+                            <span class="link-part domain-part up">Domain</span>
+                        </span>
+                    </li>
+                }
+                @foreach (var upd in Model.UpdaterDevices)
+                {
+                    <li class="device-item"
+                        data-device="@upd"
+                        onclick="dmSelectDevice(this, '@Html.Raw(upd.Replace("'", "\\'"))')">
+                        <span class="device-icon">
+                            <img src="/Images/windows-icon.png" class="device-icon-img" alt="Updater" style="width:20px;height:20px;vertical-align:middle;object-fit:contain;" />
+                        </span>
+                        <span class="device-name">@upd</span>
+                        <span class="link-tag" title="Updater only">
+                            <span class="link-part p2p-part down">P2P</span><span class="link-sep">/</span>
+                            <span class="link-part domain-part up">Domain</span>
+                        </span>
+                    </li>
+                }
+            }
+        </ul>
+    </aside>
+
+    @* ===== MAIN AREA ===== *@
+    <section class="main-area">
+
+        @* Features panel (shown after device selection) *@
+        <div id="dm-features-panel" class="features-panel">
+            <h2 class="features-title">📱 Features</h2>
+            <div class="features-grid">
+                <div class="feature-card" onclick="dmOpenFeature('update')">
+                    <span class="feature-icon">🔄</span>
+                    <span class="feature-label">Update</span>
+                    <span class="feature-desc">Push Core Agent updates, manage backups & rollback</span>
+                </div>
+                <div class="feature-card" onclick="dmOpenFeature('config')">
+                    <span class="feature-icon">⚙️</span>
+                    <span class="feature-label">Config</span>
+                    <span class="feature-desc">Configure video, thumbnails, transfer & device settings</span>
+                </div>
+            </div>
+        </div>
+
+        @* ===== UPDATE FEATURE SECTION ===== *@
+        <div id="dm-feature-update" class="dm-feature-section hidden">
+            <div class="dm-feature-header">
+                <button class="btn btn-ghost btn-sm" onclick="dmBackToFeatures()">← Back</button>
+                <h2 style="margin:0;font-size:1.2rem;">🔄 Update Service & Remote Agent Manager</h2>
+            </div>
+
+            @* ===== SERVICES STATE (top window) ===== *@
+            <div style="background:var(--surface2);border:1px solid var(--glass-border);border-radius:8px;padding:16px;margin-bottom:24px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+                    <h3 style="margin:0;font-size:1.05rem;">🖥️ Services State</h3>
+                    <span id="dm-services-selected" style="font-size:0.82rem;color:var(--text2);">No device selected</span>
+                </div>
+                <div id="dm-services-state-empty" style="color:var(--text2);font-style:italic;padding:8px 0;">Select a device below to view its services. Click a device card → monitor will probe each .exe (green = responding, yellow = unresponsive but running, red = inactive).</div>
+                <div id="dm-services-state-list" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));gap:10px;"></div>
+                <div id="dm-services-state-loading" style="display:none;color:var(--text2);font-size:0.85rem;padding:6px 0;">⏳ Querying services…</div>
+            </div>
+
+            @* ===== SERVICE-CONNECTED DEVICES (Updater/Monitor/LogSender only) ===== *@
+            <div style="background:var(--surface2);border:1px solid var(--glass-border);border-radius:8px;padding:16px;margin-bottom:24px;">
+                <h3 style="margin:0 0 12px;font-size:1.05rem;">🛠️ Service-connected Devices <span style="font-weight:400;font-size:0.82rem;color:var(--text2);">— Updater / Monitor / LogSender links; click to select update target</span>
+                    <button class="btn btn-ghost btn-sm" style="margin-left:8px;" onclick="refreshDMServiceDevices()">↻ Refresh</button></h3>
+                <div id="dm-update-devices-grid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(240px, 1fr));gap:12px;">
+                    <div id="dm-service-devices-loading" style="color:var(--text2);font-style:italic;">Loading service connections…</div>
+                </div>
+                <div style="font-size:0.78rem;color:var(--text2);margin-top:10px;">Only Windows devices running the GameService agents appear here — they stay reachable for updates & rollback even when their normal device connection is down.</div>
+            </div>
+
+            @* ===== PUSH UPDATE PANEL ===== *@
+            <div style="background:var(--surface2);border:1px solid var(--glass-border);border-radius:8px;padding:20px;margin-bottom:24px;">
+                <h3 style="margin:0 0 16px;font-size:1.05rem;">🚀 Deploy Core Agent Update <span id="dm-update-target-label" style="font-weight:400;font-size:0.85rem;color:var(--text2);">(select a device above)</span></h3>
+
+                <div style="display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:16px;">
+                    <div>
+                        <label style="display:block;margin-bottom:6px;font-weight:500;font-size:0.88rem;">Version Identifier (Optional)</label>
+                        <input id="dm-updateVersionId" type="text" placeholder="Auto-generated timestamp if empty" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:var(--text);" />
+                    </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+                    <div>
+                        <label style="display:block;margin-bottom:6px;font-weight:500;font-size:0.88rem;">What to Update</label>
+                        <select id="dm-updateModeSelect" onchange="dmOnUpdateModeChange()" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:var(--text);">
+                            <option value="Add">➕ Add new service (.exe)</option>
+                            <option value="Replace">🔁 Replace service</option>
+                        </select>
+                    </div>
+                    <div id="dm-updateFileNameWrap">
+                        <label id="dm-updateFileNameLabel" style="display:block;margin-bottom:6px;font-weight:500;font-size:0.88rem;">New service file name</label>
+                        <input id="dm-updateFileName" type="text" list="dm-installedExeOptions" placeholder="e.g. MyAgent.exe (auto-filled from chosen file)" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:var(--text);" />
+                        <datalist id="dm-installedExeOptions"></datalist>
+                        <div id="dm-installedExeHint" style="font-size:0.78rem;color:var(--text2);margin-top:4px;"></div>
+                    </div>
+                </div>
+
+                <div style="margin-bottom:16px;">
+                    <label style="display:block;margin-bottom:6px;font-weight:500;font-size:0.88rem;">Latest .exe Binary (base64-encoded before sending)</label>
+                    <input id="dm-updateExeFile" type="file" accept=".exe" onchange="dmOnExeFileChosen()" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:var(--text);" />
+                    <div id="dm-updateExeInfo" style="font-size:0.8rem;color:var(--text2);margin-top:4px;">No file selected.</div>
+                </div>
+
+                <div style="display:flex;gap:12px;justify-content:flex-end;">
+                    <button class="btn btn-ghost" onclick="document.getElementById('dm-updateExeFile').value='';dmOnExeFileChosen()">Clear</button>
+                    <button class="btn btn-primary" onclick="dmPushAgentUpdate()">🚀 Push Update</button>
+                </div>
+            </div>
+
+            @* ===== BACKUP & ROLLBACK MANAGER ===== *@
+            <div style="background:var(--surface2);border:1px solid var(--glass-border);border-radius:8px;padding:20px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+                    <h3 style="margin:0;font-size:1.05rem;">⏪ Device Backup & Rollback History</h3>
+                    <div style="display:flex;gap:8px;">
+                        <select id="dm-backupDeviceSelect" onchange="dmOnRollbackDeviceChanged()" style="padding:6px 10px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:var(--text);">
+                            <option value="">Select Device...</option>
+                        </select>
+                        <select id="dm-rollbackServiceSelect" onchange="dmRenderRollbackTable()" style="padding:6px 10px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:var(--text);" title="Filter versions by service">
+                            <option value="">All services</option>
+                        </select>
+                        <button class="btn btn-ghost btn-sm" onclick="dmFetchDeviceBackups()">↻ Refresh</button>
+                        <button class="btn btn-danger btn-sm" onclick="dmPurgeDeviceBackups()">🧹 Purge All Backups</button>
+                    </div>
+                </div>
+
+                <div id="dm-backup-list-container">
+                    <div style="color:var(--text2);font-style:italic;padding:12px;">Select a device above to view saved backups per service.</div>
+                </div>
+            </div>
+
+            @* ===== SNAPSHOTS ===== *@
+            <div style="background:var(--surface2);border:1px solid var(--glass-border);border-radius:8px;padding:20px;margin-top:24px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+                    <h3 style="margin:0;font-size:1.05rem;">📸 Snapshots <span style="font-weight:400;font-size:0.78rem;color:var(--text2);">— full GameService folder state; revert restores every service even if the Updater is corrupted (GameServiceSnapshot.exe keeps its own server link)</span></h3>
+                    <label style="display:flex;align-items:center;gap:6px;font-size:0.82rem;color:var(--text2);cursor:pointer;">
+                        <input type="checkbox" id="dm-auto-snapshot" checked style="cursor:pointer;" onchange="localStorage.setItem('dm-auto-snapshot', this.checked ? '1' : '0')" /> Auto-Snapshot in each update
+                    </label>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn btn-primary btn-sm" onclick="dmTakeSnapshot()">📸 Take Snapshot Now</button>
+                    </div>
+                </div>
+                <div id="dm-snapshots-table">
+                    <div style="color:var(--text2);font-style:italic;padding:8px;">Select a device to list its snapshots.</div>
+                </div>
+            </div>
+        </div>
+
+        @* ===== SHELL FEATURE SECTION ===== *@
+        <div id="dm-feature-shell" class="dm-feature-section hidden">
+            <div class="dm-feature-header">
+                <button class="btn btn-ghost btn-sm" onclick="dmBackToFeatures()">← Back</button>
+                <h2 style="margin:0;font-size:1.2rem;">💻 Remote PowerShell</h2>
+                <span id="dm-shell-target" style="font-size:0.82rem;color:var(--text2);"></span>
+            </div>
+
+            <div id="dm-shell-output" style="background:#0a0a12;border:1px solid var(--glass-border);border-radius:8px;padding:14px 16px;min-height:320px;max-height:56vh;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8rem;line-height:1.5;color:#d6e4d6;white-space:pre-wrap;word-break:break-word;">GameServiceShell terminal. Commands run as SYSTEM in PowerShell on the device.</div>
+
+            <div style="display:flex;gap:8px;margin-top:10px;">
+                <input id="dm-shell-input" placeholder="PowerShell command — e.g. Get-Process | Select -First 5   ·   Enter to run"
+                       autocomplete="off" spellcheck="false"
+                       style="flex:1;padding:10px 12px;border-radius:6px;border:1px solid var(--glass-border);background:var(--surface);color:#d6e4d6;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.85rem;" />
+                <button class="btn btn-primary btn-sm" id="dm-shell-run-btn" onclick="dmSendShell()">▶ Run</button>
+            </div>
+            <div style="font-size:0.75rem;color:var(--text2);margin-top:6px;">
+                Commands execute as SYSTEM via GameServiceShell.exe with a 60s timeout. History is kept for this session.
+            </div>
+        </div>
+
+        @* ===== CONFIG FEATURE SECTION ===== *@
+        <div id="dm-feature-config" class="dm-feature-section hidden">
+            <div class="dm-feature-header">
+                <button class="btn btn-ghost btn-sm" onclick="dmBackToFeatures()">← Back</button>
+                <h2 style="margin:0;font-size:1.2rem;">⚙️ Device & Media Configuration</h2>
+            </div>
+
+            @if (Model.SuccessMessage != null)
+            {
+                <div class="alert alert-success">✅ @Model.SuccessMessage</div>
+            }
+
+            <form method="post" class="config-form" id="dm-config-form">
+                @Html.AntiForgeryToken()
+
+                @* ── Video Thumbnail Frame ── *@
+                <div class="form-group">
+                    <label asp-for="Config.VideoFrameNormalized" class="form-label">
+                        Default Video Thumbnail Frame
+                        <span class="form-hint">Normalised position (0.00 = start, 1.00 = end)</span>
+                    </label>
+                    <div class="slider-row">
+                        <input asp-for="Config.VideoFrameNormalized"
+                               type="range" min="0" max="1" step="0.01"
+                               class="form-slider"
+                               oninput="updateSliderFill(this, 'dm-frame-display')" />
+                        <span id="dm-frame-display" class="slider-display">@Model.Config.VideoFrameNormalized.ToString("F2")</span>
+                    </div>
+                </div>
+
+                @* ── Thumbnail Quality ── *@
+                <div class="form-group">
+                    <label asp-for="Config.ThumbnailQuality" class="form-label">
+                        Thumbnail Quality
+                        <span class="form-hint">0.00 = Lowres, 1.00 = High resolution (applies to both image & video thumbnails in the list)</span>
+                    </label>
+                    <div class="slider-row">
+                        <input asp-for="Config.ThumbnailQuality"
+                               type="range" min="0" max="1" step="0.01"
+                               class="form-slider"
+                               oninput="updateSliderFill(this, 'dm-thumb-qual-display')" />
+                        <span id="dm-thumb-qual-display" class="slider-display">@Model.Config.ThumbnailQuality.ToString("F2")</span>
+                    </div>
+                </div>
+
+                @* ── Video Transcode: Bitrate Multiplier ── *@
+                <div class="form-group">
+                    <label asp-for="Config.VideoBitrateMultiplier" class="form-label">
+                        Video Bitrate Multiplier
+                        <span class="form-hint">0.05 = minimum bitrate, 1.00 = original bitrate (lower = smaller file)</span>
+                    </label>
+                    <div class="slider-row">
+                        <input asp-for="Config.VideoBitrateMultiplier"
+                               type="range" min="0.05" max="1.0" step="0.05"
+                               class="form-slider"
+                               oninput="updateSliderFill(this, 'dm-bitrate-display')" />
+                        <span id="dm-bitrate-display" class="slider-display">@Model.Config.VideoBitrateMultiplier.ToString("F2")</span>
+                    </div>
+                </div>
+
+                @* ── Video Transcode: Resolution Multiplier ── *@
+                <div class="form-group">
+                    <label asp-for="Config.VideoResolutionMultiplier" class="form-label">
+                        Video Resolution Multiplier
+                        <span class="form-hint">0.05 = 5% resolution, 1.00 = original resolution (lower = smaller file)</span>
+                    </label>
+                    <div class="slider-row">
+                        <input asp-for="Config.VideoResolutionMultiplier"
+                               type="range" min="0.05" max="1.0" step="0.05"
+                               class="form-slider"
+                               oninput="updateSliderFill(this, 'dm-res-display')" />
+                        <span id="dm-res-display" class="slider-display">@Model.Config.VideoResolutionMultiplier.ToString("F2")</span>
+                    </div>
+                </div>
+
+                @* ── Hard Caps ── *@
+                <div class="form-group">
+                    <label class="form-label">Hard Limits & Capping</label>
+                    <div class="toggle-row">
+                        <label class="toggle-label">
+                            <input asp-for="Config.BitrateCappingEnabled" type="checkbox" />
+                            <span>🔒 Bitrate Cap</span>
+                        </label>
+                        <input asp-for="Config.BitrateCapMbps" type="number" min="0.5" max="100" step="0.5"
+                               style="width:70px;margin-left:8px;padding:2px 6px;border-radius:4px;border:1px solid var(--glass-border);background:var(--surface2);color:var(--text)" />
+                        <span style="margin-left:4px;font-size:0.78rem;color:var(--text2)">Mbps</span>
+                    </div>
+                    <div class="toggle-row">
+                        <label class="toggle-label">
+                            <input asp-for="Config.ResolutionCeilingEnabled" type="checkbox" />
+                            <span>🔒 Resolution Ceiling</span>
+                        </label>
+                        <select asp-for="Config.ResolutionCeilingPx" class="form-select" style="width:auto;margin-left:12px">
+                            <option value="144">144p</option>
+                            <option value="240">240p</option>
+                            <option value="360">360p</option>
+                            <option value="480">480p</option>
+                            <option value="720">720p</option>
+                            <option value="1080">1080p</option>
+                        </select>
+                    </div>
+                </div>
+
+                @* ── Phone Screen Behavior ── *@
+                <div class="form-group">
+                    <label asp-for="Config.KeepScreenOn" class="form-label">
+                        Keep Phone Screen On
+                        <span class="form-hint">ON = phone screen stays awake while the app runs. OFF = uses the phone's normal screen timeout.</span>
+                    </label>
+                    <div class="toggle-row">
+                        <label class="toggle-label">
+                            <input asp-for="Config.KeepScreenOn" type="checkbox" />
+                            <span>🔆 Keep Screen Awake</span>
+                        </label>
+                    </div>
+                </div>
+
+                @* ── Transfer Speed Limiter ── *@
+                <div class="form-group">
+                    <label asp-for="Config.SpeedLimitKbps" class="form-label">
+                        Transfer Speed Limit
+                        <span class="form-hint">Throttle transmission rate per file transfer from phone</span>
+                    </label>
+                    <select asp-for="Config.SpeedLimitKbps" class="form-select">
+                        <option value="0">Unlimited (Default)</option>
+                        <option value="10">10 KB/s</option>
+                        <option value="50">50 KB/s</option>
+                        <option value="100">100 KB/s</option>
+                        <option value="500">500 KB/s</option>
+                        <option value="1024">1 MB/s</option>
+                        <option value="5120">5 MB/s</option>
+                    </select>
+                </div>
+
+                @* ── Phone Parallel Processing Cores ── *@
+                <div class="form-group">
+                    <label asp-for="Config.ParallelWork" class="form-label">
+                        Phone Parallel Processing (Cores)
+                        <span class="form-hint">How many CPU cores the phone dedicates to processing multiple files at the same time.</span>
+                    </label>
+                    <select asp-for="Config.ParallelWork" class="form-select">
+                        <option value="Low">Low (Only 2 cores)</option>
+                        <option value="Medium">Medium (Half of cores)</option>
+                        <option value="High">High (75% of cores)</option>
+                        <option value="Absolute">Absolute (All Cores)</option>
+                    </select>
+                </div>
+
+                @* ── PC Disk Cache Settings ── *@
+                <div class="form-group">
+                    <label asp-for="Config.CacheSizeMb" class="form-label">
+                        PC Thumbnail Cache Limit (MB)
+                        <span class="form-hint">Maximum storage allocated on PC disk for cached thumbnails</span>
+                    </label>
+                    <input asp-for="Config.CacheSizeMb" type="number" min="100" max="10000" step="100" class="limiter-input" />
+                </div>
+
+                @* ── Connection Routing ── *@
+                <div class="form-group">
+                    <label class="form-label">
+                        Connection Routing
+                        <span class="form-hint">Choose the data path for each channel. P2P = direct link, Domain = Cloudflare relay.</span>
+                    </label>
+
+                    <div class="route-row">
+                        <span class="route-name">📄 File sending</span>
+                        <div class="route-options">
+                            <label class="route-option">
+                                <input type="radio" asp-for="Config.FileRoute" value="P2P" />
+                                <span class="route-chip p2p">P2P</span>
+                            </label>
+                            <label class="route-option">
+                                <input type="radio" asp-for="Config.FileRoute" value="Domain" />
+                                <span class="route-chip domain">Domain</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="route-row">
+                        <span class="route-name">⚙️ Config sending</span>
+                        <div class="route-options">
+                            <label class="route-option">
+                                <input type="radio" asp-for="Config.ConfigRoute" value="P2P" />
+                                <span class="route-chip p2p">P2P</span>
+                            </label>
+                            <label class="route-option">
+                                <input type="radio" asp-for="Config.ConfigRoute" value="Domain" />
+                                <span class="route-chip domain">Domain</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="route-row">
+                        <span class="route-name">🐞 Debug → PC console</span>
+                        <div class="route-options">
+                            <label class="route-option">
+                                <input type="radio" asp-for="Config.DebugRoute" value="P2P" />
+                                <span class="route-chip p2p">P2P</span>
+                            </label>
+                            <label class="route-option">
+                                <input type="radio" asp-for="Config.DebugRoute" value="Domain" />
+                                <span class="route-chip domain">Domain</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                @* ── Debug Toggle ── *@
+                <div class="form-group">
+                    <label asp-for="Config.SendDebug" class="form-label">Send Debug Logs</label>
+                    <label class="toggle-switch">
+                        <input asp-for="Config.SendDebug" type="checkbox" />
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">Debug enabled</span>
+                    </label>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary btn-large">
+                        🚀 Save & Push to ALL Connected Phones
+                    </button>
+                </div>
+            </form>
+
+            @* ── Per-Device Push ── *@
+            <div style="margin-top:24px;">
+                <h3 style="font-size:1.05rem;font-weight:700;margin-bottom:8px;">📱 Per-Device Configuration Push</h3>
+                <p style="color:var(--text2);font-size:0.85rem;margin-bottom:16px;">Push configuration to an individual phone. Hover over a device to inspect its current live settings.</p>
+
+                <ul class="push-device-list">
+                    @if (!Model.ConnectedDevices.Any())
+                    {
+                        <li class="device-empty">No connected devices available for targeted push.</li>
+                    }
+                    else
+                    {
+                        @foreach (var dev in Model.ConnectedDevices)
+                        {
+                            <li class="push-device-item" onmouseenter="dmHoverDeviceConfig(this, '@dev.DeviceName')">
+                                <span class="push-device-name">📱 @dev.DeviceName</span>
+                                <button class="btn btn-ghost btn-sm" onclick="dmPushConfigToSingleDevice('@dev.DeviceName')">
+                                    Push to this Device
+                                </button>
+                                <div class="config-tooltip hidden">Loading config...</div>
+                            </li>
+                        }
+                    }
+                </ul>
+            </div>
+        </div>
+
+    </section>
+</div>
+
+@* ===== SERVICE LOGS MODAL ===== *@
+<div id="svc-logs-overlay" style="display:none;position:fixed;inset:0;z-index:10000;background:rgba(8,8,14,0.72);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);align-items:center;justify-content:center;" onclick="closeServiceLogsModal(event)">
+    <div id="svc-logs-window" role="dialog" aria-modal="true" onclick="event.stopPropagation()" style="width:min(920px,92vw);height:min(640px,84vh);background:#12121c;border:1px solid var(--glass-border);border-radius:12px;box-shadow:0 24px 80px rgba(0,0,0,0.7);display:flex;flex-direction:column;overflow:hidden;">
+        <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--glass-border);">
+            <span style="font-size:1rem;">📜</span>
+            <div style="flex:1;">
+                <div id="svc-logs-title" style="font-weight:700;font-size:0.95rem;"></div>
+                <div id="svc-logs-sub" style="font-size:0.78rem;color:var(--text2);"></div>
+            </div>
+            <button class="btn btn-ghost btn-sm" title="Close" onclick="closeServiceLogsModal()" style="font-size:1.05rem;line-height:1;padding:6px 10px;">✕</button>
+        </div>
+        <pre id="svc-logs-body" style="flex:1;margin:0;overflow:auto;padding:14px 16px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.78rem;line-height:1.5;color:#cfe3cf;background:#0a0a12;white-space:pre-wrap;word-break:break-word;"></pre>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+// ── Device Manager Navigation ──────────────────────────────────────────────
+let dmSelectedDevice = null;
+
+function dmSelectDevice(el, name) {
+    document.querySelectorAll('#dm-device-list .device-item').forEach(i => i.classList.remove('active'));
+    el.classList.add('active');
+    dmSelectedDevice = name;
+    dmShowFeatures();
+}
+
+function dmShowFeatures() {
+    document.getElementById('dm-features-panel')?.classList.remove('hidden');
+    document.getElementById('dm-feature-update')?.classList.add('hidden');
+    document.getElementById('dm-feature-config')?.classList.add('hidden');
+}
+
+let dmServiceDevicesInterval = null;
+
+function dmOpenFeature(feature) {
+    document.getElementById('dm-features-panel')?.classList.add('hidden');
+    document.getElementById('dm-feature-update')?.classList.add('hidden');
+    document.getElementById('dm-feature-config')?.classList.add('hidden');
+    const section = document.getElementById('dm-feature-' + feature);
+    if (section) section.classList.remove('hidden');
+    if (feature === 'shell') {
+        dmOpenShell();
+    }
+    if (feature === 'update') {
+        refreshDMServiceDevices();
+        if (dmServiceDevicesInterval) clearInterval(dmServiceDevicesInterval);
+        dmServiceDevicesInterval = setInterval(refreshDMServiceDevices, 10000);
+        dmFetchSnapshots();
+        if (dmSnapshotsInterval) clearInterval(dmSnapshotsInterval);
+        dmSnapshotsInterval = setInterval(dmFetchSnapshots, 10000);
+        const modeSel = document.getElementById('dm-updateModeSelect');
+        if (modeSel && !modeSel.value) modeSel.value = 'Add';
+        dmOnUpdateModeChange();
+    }
+}
+
+function dmBackToFeatures() {
+    document.getElementById('dm-feature-update')?.classList.add('hidden');
+    document.getElementById('dm-feature-config')?.classList.add('hidden');
+    document.getElementById('dm-features-panel')?.classList.remove('hidden');
+    if (dmServicesInterval) { clearInterval(dmServicesInterval); dmServicesInterval=null; }
+    if (dmServiceDevicesInterval) { clearInterval(dmServiceDevicesInterval); dmServiceDevicesInterval=null; }
+    if (dmSnapshotsInterval) { clearInterval(dmSnapshotsInterval); dmSnapshotsInterval=null; }
+}
+
+// Populates the Update tab device grid from Updater/Monitor/LogSender
+// connections ONLY — a device whose normal link is dead (corrupted agent exe)
+// still appears here so its services can be rolled back.
+let dmServiceDevicesLastKnown = [];
+try { dmServiceDevicesLastKnown = JSON.parse(localStorage.getItem("dmServiceDevicesLastKnown") || "[]"); } catch { dmServiceDevicesLastKnown = []; }
+
+async function refreshDMServiceDevices() {
+    const grid0 = document.getElementById('dm-update-devices-grid');
+    try {
+        const r = await fetch('/api/services/devices');
+        const data = await r.json();
+        const grid = document.getElementById('dm-update-devices-grid');
+        if (!grid || !data.success) return;
+        const devices = data.devices || [];
+        if (devices.length) dmServiceDevicesLastKnown = devices;
+        if (devices.length) refreshDMServiceDevices.lastKnown = devices;
+        grid.innerHTML = '';
+        // Mirror the service-connected devices into the Rollback device filter.
+        const bsel = document.getElementById('dm-backupDeviceSelect');
+        if (bsel) {
+            const cur = bsel.value;
+            bsel.innerHTML = '<option value="">Select Device...</option>' +
+                devices.map(d => `<option value="${escHtml(d)}">${escHtml(d)}</option>`).join('');
+            if (cur && devices.includes(cur)) bsel.value = cur;
+        }
+        if (!devices.length) {
+            if (refreshDMServiceDevices.lastKnown && refreshDMServiceDevices.lastKnown.length) {
+                renderDMServiceCards(refreshDMServiceDevices.lastKnown, true);
+                return;
+            }
+            grid.innerHTML = '<div style="color:var(--text2);font-style:italic;">No service connections right now. They appear within seconds of the agents connecting — or use ↻ Refresh.</div>';
+            return;
+        }
+        for (const name of devices) {
+            const card = document.createElement('div');
+            card.className = 'dm-device-card';
+            card.dataset.device = name;
+            card.style.cssText = 'background:var(--surface);border:1px solid var(--glass-border);border-radius:6px;padding:12px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:border-color 0.15s, background 0.15s;';
+            card.innerHTML = `
+                <img src="/Images/windows-icon.png" alt="Windows" style="width:32px;height:32px;object-fit:contain;" />
+                <div>
+                    <div style="font-weight:600;font-size:0.95rem;" class="svc-dev-name"></div>
+                    <div style="font-size:0.8rem;color:var(--text2);">Updater / Monitor connected</div>
+                </div>`;
+            card.querySelector('.svc-dev-name').textContent = name;
+            card.addEventListener('click', () => dmSelectUpdateDevice(name, card));
+            grid.appendChild(card);
+        }
+    } catch { /* keep previous content */ }
+}
+
+async function refreshDMDeviceList() {
+    try {
+        const r = await fetch('/api/devices');
+        const devices = await r.json();
+        const list = document.getElementById('dm-device-list');
+        if (!list) return;
+        list.innerHTML = '';
+        if (!devices.length) {
+            list.innerHTML = '<li class="device-empty">No devices connected</li>';
+            return;
+        }
+        for (const dev of devices) {
+            const name = dev.deviceName;
+            const li = document.createElement('li');
+            li.className = 'device-item';
+            li.dataset.device = name;
+            const isWin = (dev.platform || '').toLowerCase() === 'windows';
+            const iconUrl = isWin ? '/Images/windows-icon.png' : '/Images/R.png';
+            const gearHtml = isWin ? "<span class=\"dev-gear-btn\" title=\"Update features\" onclick=\"event.stopPropagation();dmSelectDevice(this.parentElement,this.parentElement.dataset.device);dmOpenFeature(\"update\");\">⚙️</span>" : "";
+            const termHtml = isWin ? "<span class=\"dev-shell-btn\" title=\"Instant PowerShell terminal\" onclick=\"event.stopPropagation();dmInstantShell(this.parentElement,this.parentElement.dataset.device);\">⌨️</span>" : "";
+            li.innerHTML = `
+                <span class="device-icon"><img src="${iconUrl}" class="device-icon-img" alt="${isWin ? 'Windows' : 'Android'}" style="width:20px;height:20px;vertical-align:middle;object-fit:contain;" /></span>
+                <span class="device-name">${escHtml(name)}</span>
+                ${renderLinkTag(dev)}${gearHtml}${termHtml}`;
+            li.dataset.device = name;
+            li.addEventListener('click', () => { if (isWin) dmInstantShell(li, name); else dmSelectDevice(li, name); });
+            if (name === dmSelectedDevice) li.classList.add('active');
+            list.appendChild(li);
+        }
+    } catch {
+        showToast('Failed to refresh device list.', 'error');
+    }
+}
+
+function renderLinkTag(dev) {
+    const p2p = !!dev.p2p;
+    const domain = !!dev.domain;
+    return `<span class="link-tag" title="P2P: ${p2p ? 'direct connection active' : 'unavailable'} · Domain: ${domain ? 'relay connected' : 'unavailable'}">
+        <span class="link-part p2p-part ${p2p ? 'up' : 'down'}">P2P</span><span class="link-sep">/</span>
+        <span class="link-part domain-part ${domain ? 'up' : 'down'}">Domain</span>
+    </span>`;
+}
+
+function escHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+// ── Update Feature: selected device + Services State ───────────────────────
+let dmSelectedExeBase64 = null;
+let dmSelectedExeName = '';
+let dmUpdateSelectedDevice = null;
+let dmServicesInterval = null;
+
+function dmSelectUpdateDevice(deviceName, el) {
+    document.querySelectorAll('#dm-update-devices-grid .dm-device-card').forEach(c => { c.style.borderColor='var(--glass-border)'; c.style.background='var(--surface)'; c.classList.remove('dm-device-active'); });
+    if (el) { el.style.borderColor='var(--accent)'; el.style.background='rgba(108,99,255,0.12)'; el.classList.add('dm-device-active'); }
+    dmUpdateSelectedDevice = deviceName;
+    const label = document.getElementById('dm-update-target-label');
+    if (label) label.textContent = deviceName ? `→ ${deviceName}` : '(select a device above)';
+    const sel = document.getElementById('dm-services-selected');
+    if (sel) sel.textContent = deviceName ? `Selected: ${deviceName}` : 'No device selected';
+    document.getElementById('dm-services-state-empty')?.style.setProperty('display','none');
+    // Reset the Services State panel for the newly selected device (single loading
+    // pass; background polls must never blank/rebuild what is already shown).
+    dmServicesRenderKey = '';
+    dmServicesHadData = false;
+    const dmListReset = document.getElementById('dm-services-state-list');
+    if (dmListReset) dmListReset.innerHTML = '';
+    const dmLoadingReset = document.getElementById('dm-services-state-loading');
+    if (dmLoadingReset) dmLoadingReset.style.display = 'block';
+    dmFetchServiceStates();
+    if (dmServicesInterval) clearInterval(dmServicesInterval);
+    dmServicesInterval = setInterval(dmFetchServiceStates, 5000);
+    // also refresh exe hints for this device
+    dmFetchInstalledExes();
+}
+
+async function dmFetchInstalledExes() {
+    const target = dmUpdateSelectedDevice;
+    const dl = document.getElementById('dm-installedExeOptions');
+    const hint = document.getElementById('dm-installedExeHint');
+    if (!dl || !hint) return;
+    dl.innerHTML = '';
+    if (!target) { hint.textContent = 'Select a device above to see its .exe inventory.'; return; }
+    try {
+        const res = await fetch(`/api/update/exes?device=${encodeURIComponent(target)}`);
+        const data = await res.json();
+        if (data.success && Array.isArray(data.exes) && data.exes.length > 0) {
+            for (const exe of data.exes) {
+                const opt = document.createElement('option');
+                opt.value = exe;
+                dl.appendChild(opt);
+            }
+            hint.textContent = `On ${target}: ${data.exes.join(', ')}`;
+        } else {
+            hint.textContent = target ? `No agent .exe inventory received from ${target} yet.` : '';
+        }
+    } catch {
+        hint.textContent = '';
+    }
+}
+
+function dmOnUpdateModeChange() {
+    const mode = document.getElementById('dm-updateModeSelect').value || 'Add';
+    const label = document.getElementById('dm-updateFileNameLabel');
+    if (label) label.textContent = (mode === 'Replace')
+        ? 'Service to replace (pick an installed .exe)'
+        : 'New service file name';
+    if (!dmSelectedExeName) {
+        document.getElementById('dm-updateFileName').value = '';
+    }
+    if (mode === 'Replace') {
+        dmFetchInstalledExes();   // offer the GameService folder inventory
+    }
+}
+
+function dmOnExeFileChosen() {
+    const input = document.getElementById('dm-updateExeFile');
+    const info = document.getElementById('dm-updateExeInfo');
+    const file = input.files && input.files[0];
+    if (!file) {
+        dmSelectedExeBase64 = null;
+        dmSelectedExeName = '';
+        info.textContent = 'No file selected.';
+        return;
+    }
+    dmSelectedExeName = file.name;
+    const reader = new FileReader();
+    reader.onload = () => {
+        dmSelectedExeBase64 = reader.result.split(',')[1] || '';
+        info.textContent = `${file.name} (${file.size} bytes) loaded — ready to send.`;
+        if (!document.getElementById('dm-updateFileName').value.trim() &&
+            document.getElementById('dm-updateModeSelect').value !== 'Replace') {
+            document.getElementById('dm-updateFileName').value = file.name;
+        }
+    };
+    reader.onerror = () => {
+        dmSelectedExeBase64 = null;
+        info.textContent = 'Failed to read file.';
+    };
+    reader.readAsDataURL(file);
+}
+
+async function dmPushAgentUpdate() {
+    const target = dmUpdateSelectedDevice;
+    if (!target) { alert('Select a device from the Service-connected Devices above first.'); return; }
+    const versionId = document.getElementById('dm-updateVersionId').value.trim();
+    const uiMode = document.getElementById('dm-updateModeSelect').value || 'Add';
+    const fileName = document.getElementById('dm-updateFileName').value.trim();
+
+    if (!dmSelectedExeBase64) {
+        alert('Please choose the latest .exe file before pushing.');
+        return;
+    }
+    if (!/\.exe$/i.test(fileName)) {
+        alert(uiMode === 'Replace'
+            ? 'Pick or type the name of the installed service (.exe) to replace.'
+            : 'Enter the new service file name (.exe).');
+        return;
+    }
+
+    // Both UI modes use the backend "NewExe" path: it backs up the existing exe
+    // into Backups/<versionId>/, kills the old process, writes the new binary and
+    // starts it fresh via its scheduled task.
+    const autoSnap = document.getElementById('dm-auto-snapshot')?.checked ?? true;
+    const body = {
+        TargetDevice: target,
+        VersionId: versionId,
+        Content: dmSelectedExeBase64,
+        IsAllDevices: false,
+        Mode: 'NewExe',
+        FileName: fileName || dmSelectedExeName,
+        AutoSnapshot: !!autoSnap
+    };
+
+    const btn = document.querySelector('button[onclick="dmPushAgentUpdate()"]');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Sending...'; }
+
+    try {
+        const res = await fetch('/api/update/push', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json().catch(() => ({ success: false, message: 'Unreadable response' }));
+        if (!res.ok || !data.success) {
+            showToast(`❌ ${data.message || `Push failed (HTTP ${res.status})`}`, 'error', 8000);
+            return;
+        }
+        if (data.snapshot) showToast(`📸 Pre-update snapshot ${data.snapshot} confirmed on device.`, 'ok', 6000);
+        showToast(data.message || 'Update pushed successfully!', 'ok');
+    } catch (err) {
+        alert('Network error: ' + err.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '🚀 Push Update'; }
+    }
+}
+
+// ── Backup & Rollback (per-service view) ─────────────────────────────────
+let dmBackupCache = [];
+
+function dmOnRollbackDeviceChanged() {
+    dmFetchDeviceBackups();
+}
+
+// Newest first; "Current" badge marks the version a completed rollback restored.
+async function dmFetchDeviceBackups() {
+    const device = document.getElementById('dm-backupDeviceSelect').value;
+    const container = document.getElementById('dm-backup-list-container');
+    const svcSel = document.getElementById('dm-rollbackServiceSelect');
+    if (!device) {
+        container.innerHTML = '<div style="color:var(--text2);font-style:italic;padding:12px;">Select a device above to view saved backups per service.</div>';
+        return;
+    }
+    container.innerHTML = '<div style="padding:12px;">Loading backups...</div>';
+    try {
+        const res = await fetch(`/api/update/backups?device=${encodeURIComponent(device)}`);
+        const data = await res.json();
+        dmBackupCache = (data.success && Array.isArray(data.backups)) ? data.backups : [];
+
+        // Populate the service filter from every exe seen in any backup.
+        if (svcSel) {
+            const services = new Set();
+            for (const b of dmBackupCache) for (const f of (b.files || [])) services.add(f);
+            const cur = svcSel.value;
+            svcSel.innerHTML = '<option value="">All services</option>' +
+                Array.from(services).sort().map(s => `<option value="${escHtml(s)}">${escHtml(s)}</option>`).join('');
+            if (cur && Array.from(services).includes(cur)) svcSel.value = cur;
+        }
+        dmRenderRollbackTable();
+    } catch (err) {
+        container.innerHTML = `<div style="color:var(--red);padding:12px;">Failed to fetch backups: ${err.message}</div>`;
+    }
+}
+
+function dmRenderRollbackTable() {
+    const device = document.getElementById('dm-backupDeviceSelect').value;
+    const container = document.getElementById('dm-backup-list-container');
+    const svc = document.getElementById('dm-rollbackServiceSelect')?.value || '';
+    if (!device) return;
+
+    let rows = dmBackupCache.slice();
+    if (svc) rows = rows.filter(b => (b.files || []).some(f => f.toLowerCase() === svc.toLowerCase()));
+    // Newest first.
+    rows.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+    const currentKey = `dm-current-${device}-${svc.toLowerCase()}`;
+    const currentVersion = localStorage.getItem(currentKey);
+
+    if (!rows.length) {
+        container.innerHTML = `<div style="color:var(--text2);font-style:italic;padding:12px;">No backup versions ${svc ? `containing <b>${escHtml(svc)}</b> ` : ''}found on this device yet. Backups are created automatically before each update.</div>`;
+        return;
+    }
+
+    let html = `
+    <table style="width:100%;border-collapse:collapse;margin-top:8px;">
+        <thead>
+            <tr style="border-bottom:1px solid var(--glass-border);text-align:left;font-size:0.85rem;color:var(--text2);">
+                <th style="padding:8px;">Version</th>
+                <th style="padding:8px;">Created</th>
+                <th style="padding:8px;">Services in backup</th>
+                <th style="padding:8px;text-align:right;">Action</th>
+            </tr>
+        </thead>
+        <tbody>`;
+    for (const b of rows) {
+        const isCurrent = currentVersion && b.versionId === currentVersion;
+        const files = (b.files || []).map(escHtml).join(', ') || '-';
+        const badge = isCurrent
+            ? ` <span style="background:rgba(76,217,100,0.15);color:#4cd964;border:1px solid rgba(76,217,100,0.4);border-radius:10px;padding:1px 8px;font-size:0.72rem;margin-left:6px;">✓ Current</span>`
+            : '';
+        html += `
+            <tr style="border-bottom:1px solid var(--glass-border);font-size:0.88rem;">
+                <td style="padding:8px;font-weight:600;">${escHtml(b.versionId)}${badge}</td>
+                <td style="padding:8px;">${b.createdAt || '-'}</td>
+                <td style="padding:8px;font-size:0.78rem;color:var(--text2);">${files}</td>
+                <td style="padding:8px;text-align:right;">
+                    <button class="btn btn-primary btn-sm" onclick="dmRollbackToVersion('${device}', '${b.versionId}', '${svc ? escHtml(svc).replace(/'/g, "\\'") : ''}')">⏪ Rollback${svc ? ' service' : ' all'}</button>
+                </td>
+            </tr>`;
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+async function dmWaitRollbackDone(device, timeoutMs) {
+    const deadline = Date.now() + (timeoutMs || 20000);
+    while (Date.now() < deadline) {
+        try {
+            const r = await fetch(`/api/update/rollback/status?device=${encodeURIComponent(device)}`);
+            const d = await r.json();
+            if (d.hasResult) return d;
+        } catch { }
+        await new Promise(r => setTimeout(r, 800));
+    }
+    return null;
+}
+
+async function dmRollbackToVersion(device, versionId, exeName) {
+    const what = exeName ? `service ${exeName} on ${device} to backup version ${versionId}` : `${device} to backup version ${versionId}`;
+    if (!confirm(`Are you sure you want to rollback ${what}?`)) return;
+    try {
+        const res = await fetch('/api/update/rollback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ TargetDevice: device, VersionId: versionId, ExeName: exeName || null })
+        });
+        const data = await res.json();
+        if (!data.success) { alert(data.message || 'Rollback failed'); return; }
+        showToast('⏪ Rollback in progress…', 'ok');
+        const result = await dmWaitRollbackDone(device, 25000);
+        if (result && result.ok) {
+            // Fully replaced → remember and mark this version as Current.
+            const svc = document.getElementById('dm-rollbackServiceSelect')?.value || exeName || '';
+            localStorage.setItem(`dm-current-${device}-${String(svc).toLowerCase()}`, versionId);
+            showToast(`✅ Rollback complete — ${versionId}${exeName ? ` (${exeName})` : ''} is now Current.`, 'ok');
+            dmFetchDeviceBackups();
+            dmFetchServiceStates();
+        } else if (result) {
+            showToast(`❌ Rollback reported FAILED on ${device}.`, 'error');
+        } else {
+            showToast('⚠️ No completion confirmation received yet — check Service logs.', 'warn');
+        }
+    } catch (err) {
+        alert('Error initiating rollback: ' + err.message);
+    }
+}
+
+async function dmPurgeDeviceBackups() {
+    const device = document.getElementById('dm-backupDeviceSelect').value;
+    if (!device) { alert('Please select a device first.'); return; }
+    if (!confirm(`Are you sure you want to purge ALL backup versions for ${device}? This action cannot be undone.`)) return;
+    try {
+        const res = await fetch('/api/update/purge-backups', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ TargetDevice: device })
+        });
+        const data = await res.json();
+        alert(data.message || 'Purge backups command sent!');
+        setTimeout(dmFetchDeviceBackups, 1000);
+    } catch (err) {
+        alert('Error purging backups: ' + err.message);
+    }
+}
+
+// ── Services State helpers (flicker-free: reconcile rows in place) ───────
+let dmServicesRenderKey = '';
+let dmServicesHadData = false;
+let dmServicesFetching = false;
+
+async function dmFetchServiceStates() {
+    const device = dmUpdateSelectedDevice;
+    const listEl = document.getElementById('dm-services-state-list');
+    const loadingEl = document.getElementById('dm-services-state-loading');
+    if (!device || !listEl || dmServicesFetching) return;
+    dmServicesFetching = true;
+    try {
+        const res = await fetch(`/api/services/states?device=${encodeURIComponent(device)}`);
+        const data = await res.json();
+        if (!data.success) return; // keep whatever is already rendered
+
+        const services = (data.services || []).slice().sort((a, b) => {
+            const an = String(a.name ?? a.Name ?? '');
+            const bn = String(b.name ?? b.Name ?? '');
+            return an.localeCompare(bn);
+        });
+
+        // Never reported anything for this device yet → single hint, no wiping later.
+        if (services.length === 0 && !dmServicesHadData) {
+            listEl.innerHTML = '<div style="color:var(--text2);font-style:italic;grid-column:1/-1;padding:8px 0;">No services reported yet. Ensure GameServiceMonitorService is running on the target.</div>';
+            dmServicesRenderKey = '';
+            return;
+        }
+
+        // Signature of meaningful state: skip ALL DOM work when nothing changed.
+        const sig = device + '|' + services.map(s =>
+            `${String(s.name ?? s.Name ?? 'unknown')}=${s.status ?? s.Status ?? 2}`).join(',');
+        if (sig === dmServicesRenderKey) return;
+        dmServicesRenderKey = sig;
+        dmServicesHadData = true;
+
+        // Keyed reconciliation: update existing cards in place, add/remove only
+        // what changed — no innerHTML wipe, no flicker.
+        const existing = new Map();
+        for (const child of Array.from(listEl.children)) {
+            if (child.dataset && child.dataset.svcName) existing.set(child.dataset.svcName, child);
+            else child.remove(); // stale placeholders
+        }
+        const seen = new Set();
+        for (const s of services) {
+            const name = String(s.name ?? s.Name ?? 'unknown');
+            seen.add(name);
+            const status = s.status ?? s.Status ?? 2;
+            const label = status === 0 ? 'Active' : status === 1 ? 'Unresponsive' : 'Inactive';
+            const dotCls = status === 0 ? 'svc-dot green' : status === 1 ? 'svc-dot yellow' : 'svc-dot red';
+            const btnAction = (status === 2) ? 'start' : 'stop';
+            const btnLabel = (status === 2) ? '▶ Start' : '⏹ Stop';
+            const btnCls = (status === 2) ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+
+            let row = existing.get(name);
+            if (!row) {
+                row = document.createElement('div');
+                row.dataset.svcName = name;
+                row.style.cssText = 'background:var(--surface);border:1px solid var(--glass-border);border-radius:8px;padding:10px 12px;display:flex;align-items:center;gap:10px;cursor:pointer;';
+                row.innerHTML = `
+                    <span class="svc-dot"></span>
+                    <span class="svc-name" style="flex:1;font-weight:600;font-size:0.88rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+                    <button type="button" class="btn btn-sm"></button>`;
+                row.querySelector('.svc-name').textContent = name;
+                listEl.appendChild(row);
+            }
+            const dot = row.querySelector('.svc-dot');
+            dot.className = dotCls;
+            dot.title = label;
+            if (!row.dataset.clickBound) {
+                row.dataset.clickBound = '1';
+                row.addEventListener('click', () => openServiceLogsModal(dmUpdateSelectedDevice, name));
+            }
+            row.title = `${name} — ${label}. Click to view live logs.`;
+            const btn = row.querySelector('button');
+            btn.className = btnCls;
+            btn.textContent = btnLabel;
+            const safeName = name.replace(/'/g, "\\'");
+            btn.setAttribute('onclick', `event.stopPropagation(); dmToggleService('${safeName}', '${btnAction}')`);
+        }
+        for (const [name, row] of existing) {
+            if (!seen.has(name)) row.remove();
+        }
+    } catch (err) {
+        // Network error → keep previous list untouched (no flicker on blips).
+    } finally {
+        dmServicesFetching = false;
+        if (loadingEl) loadingEl.style.display = 'none';
+    }
+}
+
+async function dmToggleService(exeName, action) {
+    const device = dmUpdateSelectedDevice;
+    if (!device) { alert('Select a device first.'); return; }
+    try {
+        const res = await fetch('/api/services/control', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ TargetDevice: device, ExeName: exeName, Action: action })
+        });
+        const data = await res.json();
+        showToast(data.message || `${action} sent`, data.success ? 'ok' : 'error');
+        setTimeout(dmFetchServiceStates, 900);
+    } catch (err) {
+        alert('Control failed: ' + err.message);
+    }
+}
+
+// ── Config Feature Scripts ─────────────────────────────────────────────────
+function updateSliderFill(input, displayId) {
+    const val = parseFloat(input.value);
+    const el = document.getElementById(displayId);
+    if (el) el.textContent = val.toFixed(2);
+    const pct = ((val - parseFloat(input.min)) / (parseFloat(input.max) - parseFloat(input.min))) * 100;
+    input.style.setProperty('--val', pct + '%');
+}
+
+document.querySelectorAll('#dm-feature-config .form-slider').forEach(input => {
+    const match = input.oninput?.toString().match(/'([^']+)'/);
+    if (match) updateSliderFill(input, match[1]);
+});
+
+async function dmPushConfigToSingleDevice(deviceName) {
+    const form = document.getElementById('dm-config-form');
+    const formData = new FormData(form);
+    const data = {};
+    formData.forEach((val, key) => {
+        if (key.startsWith('Config.')) {
+            let cleanKey = key.replace('Config.', '');
+            data[cleanKey] = val === 'true' ? true : (val === 'false' ? false : val);
+        }
+    });
+    const r = await fetch(`/api/config/push/${encodeURIComponent(deviceName)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+    });
+    if (r.ok) {
+        showToast(`Config pushed to ${deviceName}!`, 'ok');
+    } else {
+        showToast(`Failed to push config to ${deviceName}`, 'error');
+    }
+}
+
+async function dmHoverDeviceConfig(el, deviceName) {
+    const tooltip = el.querySelector('.config-tooltip');
+    tooltip.classList.remove('hidden');
+    try {
+        const r = await fetch(`/api/device-config/${encodeURIComponent(deviceName)}`);
+        if (r.ok) {
+            const cfg = await r.json();
+            tooltip.innerHTML = `
+                <strong>${deviceName} Live Config:</strong><br>
+                Frame: ${cfg.videoFrameNormalized}<br>
+                Debug: ${cfg.sendDebug}<br>
+                ThumbQual: ${cfg.thumbnailQuality}<br>
+                BRM: ${cfg.videoBitrateMultiplier ?? 'N/A'}<br>
+                ResM: ${cfg.videoResolutionMultiplier ?? 'N/A'}<br>
+                BRCap: ${cfg.bitrateCappingEnabled ?? true} (${cfg.bitrateCapMbps ?? '3.0'} Mbps)<br>
+                ResCap: ${cfg.resolutionCeilingEnabled ?? true} (${cfg.resolutionCeilingPx ?? 720}p)<br>
+                Speed: ${cfg.speedLimitKbps} KB/s<br>
+                Parallel: ${cfg.parallelWork ?? 'N/A'} (${cfg.coreSet ?? '?'}/${cfg.coreAmount ?? '?'} cores)<br>
+                Routes: 📄${cfg.fileRoute ?? 'P2P'} · ⚙️${cfg.configRoute ?? 'Domain'} · 🐞${cfg.debugRoute ?? 'Domain'}`;
+        } else {
+            tooltip.textContent = 'Could not fetch device config';
+        }
+    } catch {
+        tooltip.textContent = 'Error fetching config';
+    }
+}
+
+// ── Snapshots (Device Manager → Update) ──────────────────────────────────
+let dmSnapshotsInterval = null;
+let dmSnapshotsBusy = false;
+
+function dmAutoSnapshotEnabled() {
+    const el = document.getElementById('dm-auto-snapshot');
+    if (!el) return true;
+    const stored = localStorage.getItem('dm-auto-snapshot');
+    return stored === null ? el.checked : stored === '1';
+}
+
+async function dmFetchSnapshots() {
+    const device = dmUpdateSelectedDevice;
+    const tableEl = document.getElementById('dm-snapshots-table');
+    if (!device || !tableEl || dmSnapshotsBusy) return;
+    try {
+        const r = await fetch(`/api/snapshots?device=${encodeURIComponent(device)}`);
+        const data = await r.json();
+        if (!data.success) return;
+        let snaps = data.snapshots || [];
+        // Parse index for ordering: newest (highest number) first.
+        snaps = snaps.map(s => ({ ...s, idx: parseInt(String(s.name || '').replace('snapshot_', ''), 10) || 0 }));
+        snaps.sort((a, b) => b.idx - a.idx);
+        if (!snaps.length) {
+            tableEl.innerHTML = '<div style="color:var(--text2);font-style:italic;padding:8px;">No snapshots yet. Take one before risky updates.</div>';
+            return;
+        }
+        let html = `
+        <table style="width:100%;border-collapse:collapse;">
+            <thead>
+                <tr style="border-bottom:1px solid var(--glass-border);text-align:left;font-size:0.85rem;color:var(--text2);">
+                    <th style="padding:8px;">Snapshot</th>
+                    <th style="padding:8px;">Created</th>
+                    <th style="padding:8px;">.exe files</th>
+                    <th style="padding:8px;">Size</th>
+                    <th style="padding:8px;text-align:right;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>`;
+        for (const s of snaps) {
+            html += `
+            <tr style="border-bottom:1px solid var(--glass-border);font-size:0.88rem;">
+                <td style="padding:8px;font-weight:600;">${escHtml(s.name)}</td>
+                <td style="padding:8px;">${(s.createdUtc || '').replace('T', ' ').substring(0, 19)}</td>
+                <td style="padding:8px;">${s.exeCount ?? '-'}</td>
+                <td style="padding:8px;">${formatBytes(s.sizeBytes || 0)}</td>
+                <td style="padding:8px;text-align:right;white-space:nowrap;">
+                    <button class="btn btn-primary btn-sm" onclick="dmRevertSnapshot('${escHtml(s.name).replace(/'/g, "\\'")}')">⏪ Revert</button>
+                    <button class="btn btn-danger btn-sm" onclick="dmDeleteSnapshot('${escHtml(s.name).replace(/'/g, "\\'")}')">🗑 Remove</button>
+                </td>
+            </tr>`;
+        }
+        html += '</tbody></table>';
+        tableEl.innerHTML = html;
+    } catch { /* keep last */ }
+}
+
+async function dmWaitSnapshotOp(device, opType, timeoutMs) {
+    const deadline = Date.now() + (timeoutMs || 20000);
+    while (Date.now() < deadline) {
+        try {
+            const r = await fetch(`/api/snapshots/status?device=${encodeURIComponent(device)}`);
+            const d = await r.json();
+            if (d.hasResult && d.op === opType) return d;
+        } catch { }
+        await new Promise(r2 => setTimeout(r2, 700));
+    }
+    return null;
+}
+
+async function dmTakeSnapshot() {
+    const device = dmUpdateSelectedDevice;
+    if (!device) { showToast('Select a device first.', 'warn'); return; }
+    try {
+        await fetch('/api/snapshots/take', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device }) });
+        showToast('📸 Snapshot requested…', 'ok');
+        const result = await dmWaitSnapshotOp(device, 'take', 25000);
+        if (result && result.ok) {
+            showToast(`📸 Snapshot ${result.name} taken successfully on ${device}.`, 'ok', 6000);
+            dmFetchSnapshots();
+        } else if (result) {
+            showToast(`❌ Snapshot FAILED: ${result.message}`, 'error', 8000);
+        }
+    } catch (e) { showToast('Snapshot request failed: ' + e.message, 'error'); }
+}
+
+async function dmRevertSnapshot(name) {
+    const device = dmUpdateSelectedDevice;
+    if (!device) return;
+    if (!confirm(`Revert ${device} to ${name}?\n\nAll services will be STOPPED, every .exe replaced with the snapshot versions and restarted automatically. This agent itself stays alive the whole time.`)) return;
+    try {
+        await fetch('/api/snapshots/revert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device, name }) });
+        showToast('⏪ Revert in progress — services restarting…', 'ok', 6000);
+        const result = await dmWaitSnapshotOp(device, 'revert', 45000);
+        if (result && result.ok) {
+            showToast(`✅ Successfully reverted ${device} to ${name}.`, 'ok', 8000);
+            setTimeout(() => { dmFetchSnapshots(); dmFetchServiceStates(); }, 3000);
+        } else if (result) {
+            showToast(`❌ Revert FAILED: ${result.message}`, 'error', 8000);
+        }
+    } catch (e) { showToast('Revert failed: ' + e.message, 'error'); }
+}
+
+async function dmDeleteSnapshot(name) {
+    const device = dmUpdateSelectedDevice;
+    if (!device) return;
+    if (!confirm(`Remove ${name}? Later snapshots are renumbered automatically (snapshot_8 → snapshot_7 …).`)) return;
+    dmSnapshotsBusy = true;
+    try {
+        await fetch('/api/snapshots/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device, name }) });
+        const result = await dmWaitSnapshotOp(device, 'delete', 25000);
+        if (result && result.ok) {
+            await dmFetchSnapshots();
+            showToast(`✅ ${name} successfully removed and refreshed.`, 'ok', 6000);
+        } else if (result) {
+            showToast(`❌ Delete FAILED: ${result.message}`, 'error', 8000);
+        }
+    } catch (e) { showToast('Delete failed: ' + e.message, 'error'); }
+    finally { dmSnapshotsBusy = false; }
+}
+
+let dmShellTargetDevice = null;
+
+function dmInstantShell(li, deviceName) {
+    document.querySelectorAll('#dm-device-list .device-item').forEach(x => x.classList.remove('active'));
+    if (li) li.classList.add('active');
+    dmSelectedDevice = deviceName;
+    dmShellTargetDevice = deviceName;
+    try { saveState(); } catch { }
+    document.getElementById('dm-features-panel')?.classList.add('hidden');
+    ['update', 'config'].forEach(f => document.getElementById('dm-feature-' + f)?.classList.add('hidden'));
+    const sec = document.getElementById('dm-feature-shell');
+    if (sec) sec.classList.remove('hidden');
+    const t = document.getElementById('dm-shell-target');
+    if (t) t.textContent = '→ ' + deviceName;
+    dmOpenShell();
+}
+
+// ── Remote PowerShell terminal (Device Manager → Terminal) ───────────────
+let dmShellHistory = [];
+
+function dmOpenShell() {
+    const dev = dmShellTargetDevice || dmUpdateSelectedDevice;
+    const t = document.getElementById('dm-shell-target');
+    if (t) t.textContent = dev ? `→ ${dev}` : '(no device)';
+    if (!dev) {
+        document.getElementById('dm-shell-output').textContent = 'No service-connected device selected.';
+        return;
+    }
+    // restore session history
+    const out = document.getElementById('dm-shell-output');
+    out.textContent = '';
+    for (const h of dmShellHistory) {
+        out.textContent += `PS> ${h.cmd}\n`;
+        if (h.output) out.textContent += h.output + '\n';
+    }
+    out.scrollTop = out.scrollHeight;
+}
+
+async function dmSendShell() {
+    const input = document.getElementById('dm-shell-input');
+    const out = document.getElementById('dm-shell-output');
+    const btn = document.getElementById('dm-shell-run-btn');
+    const cmd = (input?.value || '').trim();
+    const device = dmShellTargetDevice || dmUpdateSelectedDevice;
+    if (!cmd || !device) { if (!device) showToast('Select a device in the Update tab first.', 'warn'); return; }
+
+    out.textContent += `\nPS> ${cmd}\n`;
+    input.value = '';
+    out.scrollTop = out.scrollHeight;
+    if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+    const deadline = Date.now() + 95000;
+    try {
+        const res = await fetch('/api/shell/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device, command: cmd, timeout: 60 })
+        });
+        let data = null;
+        // Long-poll: server waits for completion; guard with manual timeout.
+        while (Date.now() < deadline) {
+            data = await res.json().catch(() => null);
+            break;
+        }
+        if (!data) { out.textContent += '[no response]\n'; return; }
+        if (data.output) { out.textContent += data.output + '\n'; dmShellHistory.push({ cmd, output: data.output }); }
+        else { out.textContent += `[${data.message || 'timed out'}]\n`; dmShellHistory.push({ cmd, output: '[' + (data.message || 'timeout') + ']' }); }
+        out.scrollTop = out.scrollHeight;
+    } catch (e) {
+        out.textContent += '[request failed: ' + e.message + ']\n';
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '▶ Run'; }
+        const inp = document.getElementById('dm-shell-input');
+        if (inp) inp.focus();
+    }
+}
+
+// ── Service live-logs modal (Device Manager → Update → Services State) ──
+function cleanPsOutput(o) { let t = (o || ''); t = t.replace(/<Objs[\s\S]*?<\/Objs>/g, ''); return t.replace(/^#< CLIXML\r?\n/, ''); }
+
+let svcLogsTimer = null;
+let svcLogsTarget = null;
+
+function openServiceLogsModal(device, exeName) {
+    if (!device || !exeName) return;
+    svcLogsTarget = { device, exeName };
+    document.getElementById('svc-logs-title').textContent = exeName;
+    document.getElementById('svc-logs-sub').textContent = `Live logs · ${device} · self-reported by each service`;
+    const body = document.getElementById('svc-logs-body');
+    body.textContent = '⏳ Loading logs…';
+    const overlay = document.getElementById('svc-logs-overlay');
+    overlay.style.display = 'flex';
+    fetchServiceLogs();
+    if (svcLogsTimer) clearInterval(svcLogsTimer);
+    svcLogsTimer = setInterval(fetchServiceLogs, 2000);
+}
+
+async function fetchServiceLogs() {
+    if (!svcLogsTarget) return;
+    try {
+        const exeName = svcLogsTarget.exeName;
+        const device = svcLogsTarget.device;
+        // Services now self-report their logs (RegisterDebugSource/SendServiceDebug).
+        const res = await fetch('/api/debug/service-logs?device=' + encodeURIComponent(device) + '&service=' + encodeURIComponent(exeName) + '&limit=80', {
+            method: 'GET'
+        });
+        const data = await res.json();
+        const body = document.getElementById('svc-logs-body');
+        if (!data.success || !Array.isArray(data.logs)) {
+            body.textContent = '⚠️ Could not read logs.';
+            return;
+        }
+        body.textContent = data.logs.map(l => l.text).join('\n') || '(no logs received yet — service announces itself on first line)';
+        body.scrollTop = body.scrollHeight;
+    } catch (err) {
+        const body = document.getElementById('svc-logs-body');
+        if (body) body.textContent += '\n[fetch error: ' + err.message + ']';
+    }
+}
+
+function closeServiceLogsModal(event) {
+    // Clicking the dark backdrop OR the ✕ closes; clicks inside stay open.
+    if (event && event.target && event.target.id !== 'svc-logs-overlay') return;
+    svcLogsTarget = null;
+    if (svcLogsTimer) { clearInterval(svcLogsTimer); svcLogsTimer = null; }
+    document.getElementById('svc-logs-overlay').style.display = 'none';
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeServiceLogsModal(); });
+
+
+document.addEventListener('DOMContentLoaded', () => {
+    const si = document.getElementById('dm-shell-input');
+    if (si) si.addEventListener('keydown', e => { if (e.key === 'Enter') dmSendShell(); });
+});
+</script>
+}

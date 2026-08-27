@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@ViewData["Title"] — DeviceSpy</title>
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+</head>
+<body>
+    <header class="top-nav">
+        <div class="nav-brand">
+            <span class="nav-icon">🖥️</span>
+            <span class="nav-title">DeviceSpy</span>
+        </div>
+
+        @* Quick Search Bar *@
+        <div class="search-container">
+            <input id="searchInput" class="search-input" type="text" placeholder="🔍 Search files..." onkeydown="if(event.key==='Enter') executeSearch()" />
+            <select id="searchScope" class="search-scope">
+                <option value="folder">Current Folder</option>
+                <option value="global">Global Storage</option>
+            </select>
+            <button class="search-btn" onclick="executeSearch()">Search</button>
+            <button id="stopSearchBtn" class="search-stop-btn hidden" onclick="stopActiveSearch()">Stop</button>
+        </div>
+
+        <nav class="nav-links">
+            <a href="/Cache" class="nav-link @(ViewData["Page"]?.ToString() == "Cache" ? "active" : "")">
+                💾 Cache
+            </a>
+            <a href="/Actions" class="nav-link @(ViewData["Page"]?.ToString() == "Actions" ? "active" : "")">
+                ⚡ Actions
+            </a>
+            <a href="/Tunnel" class="nav-link @(ViewData["Page"]?.ToString() == "Tunnel" ? "active" : "")">
+                🛰️ Tunnel
+            </a>
+            <a href="/DeviceManager" class="nav-link @(ViewData["Page"]?.ToString() == "DeviceManager" ? "active" : "")">
+                🛠️ Device Manager
+            </a>
+            <a href="/Settings" class="nav-link @(ViewData["Page"]?.ToString() == "Settings" ? "active" : "")">
+                🔧 Settings
+            </a>
+        </nav>
+        <div class="nav-status">
+            <span id="status-dot" class="status-dot"></span>
+            <span id="status-text" class="status-text">Checking...</span>
+            <button id="debug-toggle-btn" class="btn btn-ghost btn-xs" title="Device Debug Logs" onclick="toggleDebugPanel()" style="margin-left:8px">🐛</button>
+        </div>
+    </header>
+
+    <div id="toast-container" class="toast-container"></div>
+
+    <main>
+        @RenderBody()
+    </main>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"
+            integrity="sha512-dt5jUOSMjf2FuHsb0b3YTFZZ8pLSmt2B/eBnCaFoHCDTizDKTSFdJpk6L8pb+rAPz9MDSSzMhB9Ij8F0LlQQ=="
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="~/js/app.js" asp-append-version="true"></script>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>

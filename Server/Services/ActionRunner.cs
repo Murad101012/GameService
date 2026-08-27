@@ -1,0 +1,929 @@
+using System.IO;
+using System.Text.Json;
+using System.Threading.Channels;
+using Microsoft.AspNetCore.SignalR;
+using PhonesBridge.Services.Definitions;
+
+namespace PhonesBridge.Services;
+
+/// <summary>
+/// Executes "fetch" actions: recursively walks the selected folders on a phone,
+/// downloads the requested media into the PC offline cache, honouring the same
+/// cache-suitability rules as manual browsing (never downgrade). Concurrency is
+/// per action: images use 5 workers by default, heavy/video downloads use 1 by
+/// default, but each action can choose custom counts or unlimited concurrency.
+/// Folder structure is cached for the target folders AND their parent chain so
+/// the offline browser can still navigate back up.
+/// </summary>
+public class ActionRunner
+{
+    private readonly ConnectionManager _cm;
+    private readonly CacheManager _cache;
+    private readonly DeviceConfigManager _deviceConfig;
+    private readonly IHubContext<CommunicateSignalR> _hub;
+
+    private const int ThumbChunkSize = 64 * 1024;
+    private const int FileChunkSize = 512 * 1024;
+    private const int DefaultImageWorkers = 5;
+    private const int DefaultHeavyWorkers = 1;
+
+    public ActionRunner(ConnectionManager cm, CacheManager cache, DeviceConfigManager deviceConfig, IHubContext<CommunicateSignalR> hub)
+    {
+        _cm = cm;
+        _cache = cache;
+        _deviceConfig = deviceConfig;
+        _hub = hub;
+    }
+
+    private enum FileKind { Image, Video, Audio, Other }
+
+    private sealed class WorkItem
+    {
+        public required string RelPath { get; init; }
+        public required string Name { get; init; }
+        public required FileKind Kind { get; init; }
+        public bool IsThumb { get; init; }
+    }
+
+    public async Task RunAsync(ActionEntry action, DeviceIdentity device, ActionRunState run)
+    {
+        using var runCts = new CancellationTokenSource(TimeSpan.FromHours(4));
+        bool deviceDisconnected = false;
+        bool subscribed = false;
+        RunNotifier? notifier = null;
+        CancellationTokenSource? notifierCts = null;
+
+        // Abort the whole run the instant the phone drops, and remember why so the
+        // run can be tagged "Failed" with a clear reason instead of grinding through
+        // every queued item and logging dozens of per-file connection errors.
+        void OnDevicesChanged(string deviceName)
+        {
+            if (!string.Equals(deviceName, device.DeviceName, StringComparison.OrdinalIgnoreCase)) return;
+            if (!_cm.TryGetConnectionId(deviceName, out _))
+            {
+                deviceDisconnected = true;
+                runCts.Cancel();
+            }
+        }
+
+        try
+        {
+            if (!_cm.TryGetConnectionId(device.DeviceName, out string? connId))
+            {
+                run.Status = "Failed"; run.EndedUtc = DateTime.UtcNow; run.Message = "Device not connected";
+                return;
+            }
+
+            _cm.DevicesChanged += OnDevicesChanged;
+            subscribed = true;
+
+            Configuration cfg = ResolveConfig(action, device.DeviceId);
+            string deviceId = device.DeviceId;
+
+            // "Fetch the Files" actions may be bound to one device only.
+            if (!string.IsNullOrEmpty(action.DeviceId)
+                && !string.Equals(action.DeviceId, device.DeviceId, StringComparison.OrdinalIgnoreCase))
+            {
+                run.Status = "Failed"; run.EndedUtc = DateTime.UtcNow;
+                run.Message = "Action is bound to another device";
+                return;
+            }
+
+            bool isFileAction = string.Equals(action.Type, "fetchFiles", StringComparison.OrdinalIgnoreCase);
+
+            bool wantImages, wantVideoThumb, wantVideoActual, wantAudio, wantFiles;
+            if (isFileAction)
+            {
+                wantImages = true;
+                wantVideoThumb = string.Equals(action.VideoFetchType, "thumbnail", StringComparison.OrdinalIgnoreCase);
+                wantVideoActual = string.Equals(action.VideoFetchType, "actual", StringComparison.OrdinalIgnoreCase);
+                wantAudio = true;
+                wantFiles = true;
+            }
+            else
+            {
+                wantImages = action.ContentTypes.Contains("images", StringComparer.OrdinalIgnoreCase);
+                wantVideoThumb = action.ContentTypes.Contains("videoThumb", StringComparer.OrdinalIgnoreCase);
+                wantVideoActual = action.ContentTypes.Contains("videoActual", StringComparer.OrdinalIgnoreCase);
+                wantAudio = action.ContentTypes.Contains("audio", StringComparer.OrdinalIgnoreCase);
+                wantFiles = action.ContentTypes.Contains("files", StringComparer.OrdinalIgnoreCase);
+            }
+
+            if (!wantImages && !wantVideoThumb && !wantVideoActual && !wantAudio && !wantFiles)
+            {
+                run.Status = "Done"; run.EndedUtc = DateTime.UtcNow; run.Message = "No content types selected";
+                return;
+            }
+
+            // "Fetch the Files": if every listed file is already cached at an equal-or-higher
+            // quality, report "already finished" without re-downloading anything. This check
+            // runs on every fire so a cache that was lost or cleared retriggers a real fetch.
+            if (isFileAction && AllFilesAlreadyFetched(action, cfg, deviceId))
+            {
+                run.Status = "Done"; run.EndedUtc = DateTime.UtcNow;
+                run.Message = $"Action ({action.Name}) already finished";
+                run.AppendLog(run.Message);
+                return;
+            }
+
+            // ── Persistent KDE progress notification (acts like Dolphin's file-copy
+            //    toast: speed per second, LIVE counters, 0→100% bar, shrinks to tray).
+            notifier = new RunNotifier(action.Name);
+            notifierCts = new CancellationTokenSource();
+            _ = Task.Run(() => RunNotifierLoopAsync(notifier, run, notifierCts.Token));
+
+            // ── Cache folder structure for the ancestor chain (incl. root "") ──
+            var ancestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            IEnumerable<string> sourcePaths = isFileAction
+                ? action.Files.Select(ParentDir)
+                : action.Folders;
+            foreach (var folder in sourcePaths)
+            {
+                if (string.IsNullOrEmpty(folder)) continue;
+                foreach (var anc in Ancestors(folder))
+                {
+                    if (!string.Equals(anc, folder, StringComparison.OrdinalIgnoreCase))
+                        ancestors.Add(anc);
+                }
+                ancestors.Add(folder);
+            }
+            foreach (var anc in ancestors)
+            {
+                var nodeInfo = await GetPathInfoAsync(connId, anc, ct: runCts.Token);
+                if (nodeInfo == null || !nodeInfo.Exists) continue;
+                _cache.SaveFolderCache(deviceId, anc, nodeInfo);
+                run.AppendLog($"Folder structure cached: {(string.IsNullOrEmpty(anc) ? "/" : anc)}");
+            }
+
+            // ── Channels + worker lanes sized by the action's concurrency settings ──
+            var imageChannel = Channel.CreateUnbounded<WorkItem>();
+            var heavyChannel = Channel.CreateUnbounded<WorkItem>();
+
+            string imgMode = (action.ImageConcurrencyMode ?? "default").ToLowerInvariant();
+            string hvyMode = (action.HeavyConcurrencyMode ?? "default").ToLowerInvariant();
+            int imgWorkers = ResolveWorkerCount(imgMode, action.ImageConcurrency, DefaultImageWorkers);
+            int hvyWorkers = ResolveWorkerCount(hvyMode, action.HeavyConcurrency, DefaultHeavyWorkers);
+
+            var workers = new List<Task>();
+            if (imgMode == "unlimited")
+            {
+                workers.Add(DrainUnlimitedAsync(imageChannel.Reader,
+                    item => ProcessThumbnailAsync(run, connId, deviceId, item, cfg.VideoFrameNormalized, cfg.ThumbnailQuality, runCts.Token),
+                    runCts.Token));
+            }
+            else
+            {
+                for (int i = 0; i < imgWorkers; i++)
+                {
+                    workers.Add(ThumbnailWorkerAsync(imageChannel.Reader, run, connId, deviceId, cfg.VideoFrameNormalized, cfg.ThumbnailQuality, runCts.Token));
+                }
+            }
+
+            if (hvyMode == "unlimited")
+            {
+                workers.Add(DrainUnlimitedAsync(heavyChannel.Reader,
+                    item => ProcessHeavyAsync(run, connId, deviceId, item, cfg, runCts.Token),
+                    runCts.Token));
+            }
+            else
+            {
+                for (int i = 0; i < hvyWorkers; i++)
+                {
+                    workers.Add(HeavyWorkerAsync(heavyChannel.Reader, run, connId, deviceId, cfg, runCts.Token));
+                }
+            }
+
+            // ── Producer: deep-walk each target folder (fetch) or queue the explicit
+            //    file list (fetchFiles), sending matching files to the worker lanes ──
+            var seenItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                if (isFileAction)
+                {
+                    foreach (var file in action.Files)
+                    {
+                        runCts.Token.ThrowIfCancellationRequested();
+                        await ProduceFromFileAsync(connId, deviceId, file, run, wantVideoThumb, wantVideoActual,
+                            imageChannel.Writer, heavyChannel.Writer, seenItems, runCts.Token);
+                    }
+                }
+                else
+                {
+                    foreach (var folder in action.Folders)
+                    {
+                        runCts.Token.ThrowIfCancellationRequested();
+                        await EnumerateAsync(connId, deviceId, folder, run, wantImages, wantVideoThumb, wantVideoActual, wantAudio, wantFiles,
+                            imageChannel.Writer, heavyChannel.Writer, seenItems, runCts.Token);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (runCts.IsCancellationRequested) { }
+
+            imageChannel.Writer.TryComplete();
+            heavyChannel.Writer.TryComplete();
+            try { await Task.WhenAll(workers); }
+            catch (OperationCanceledException) { }
+
+            if (deviceDisconnected)
+            {
+                run.Status = "Failed";
+                run.EndedUtc = DateTime.UtcNow;
+                run.Message = "Failed: the phone disconnected mid-fetch";
+                run.AppendLog("Run failed: the phone disconnected while fetching");
+            }
+            else
+            {
+                run.Status = "Done";
+                run.EndedUtc = DateTime.UtcNow;
+                run.Message = $"Done: {run.FetchedFiles} fetched, {run.SkippedFiles} skipped, {run.FailedFiles} failed of {run.DiscoveredFiles} discovered";
+                run.AppendLog(run.Message);
+            }
+        }
+        catch (Exception ex)
+        {
+            run.Status = "Failed";
+            run.EndedUtc = DateTime.UtcNow;
+            run.Message = deviceDisconnected ? "Failed: the phone disconnected mid-fetch" : ex.Message;
+            run.AppendLog($"Run failed: {run.Message}");
+        }
+        finally
+        {
+            if (subscribed) _cm.DevicesChanged -= OnDevicesChanged;
+            if (notifier != null)
+            {
+                notifierCts!.Cancel();
+                notifier.Finish(run);
+                notifierCts.Dispose();
+            }
+        }
+    }
+
+    private static async Task RunNotifierLoopAsync(RunNotifier notifier, ActionRunState run, CancellationToken ct)
+    {
+        notifier.Start();
+        try
+        {
+            while (!ct.IsCancellationRequested && !run.IsFinished)
+            {
+                notifier.Update(run);
+                await Task.Delay(1000, ct);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RunNotifier] Loop error: {ex.Message}");
+        }
+    }
+
+    private Configuration ResolveConfig(ActionEntry action, string deviceId)
+    {
+        if (action.UseGlobalConfig)
+        {
+            return _deviceConfig.LoadDeviceConfig(deviceId)
+                ?? _deviceConfig.LoadGlobalConfig()
+                ?? new Configuration();
+        }
+
+        return new Configuration
+        {
+            VideoFrameNormalized = Math.Clamp(action.Overrides.VideoFrameNormalized, 0f, 1f),
+            ThumbnailQuality = Math.Clamp(action.Overrides.ThumbnailQuality, 0f, 1f),
+            VideoQuality = 0f,
+            VideoBitrateMultiplier = Math.Clamp(action.Overrides.VideoBitrateMultiplier, 0.05f, 1f),
+            VideoResolutionMultiplier = Math.Clamp(action.Overrides.VideoResolutionMultiplier, 0.05f, 1f),
+            BitrateCappingEnabled = action.Overrides.BitrateCappingEnabled,
+            BitrateCapMbps = action.Overrides.BitrateCapMbps,
+            ResolutionCeilingEnabled = action.Overrides.ResolutionCeilingEnabled,
+            ResolutionCeilingPx = action.Overrides.ResolutionCeilingPx
+        };
+    }
+
+    /// <summary>Ancestor chain of a relative folder path: immediate parent up to the root ("").</summary>
+    private static IEnumerable<string> Ancestors(string folder)
+    {
+        var parts = folder.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var current = new List<string>();
+        for (int i = 0; i < parts.Length - 1; i++)
+        {
+            current.Add(parts[i]);
+            yield return string.Join("/", current);
+        }
+        yield return "";
+    }
+
+    private async Task<FileNodeResultDto?> GetPathInfoAsync(string connId, string path,
+        bool imageOnly = false, bool videoOnly = false, CancellationToken ct = default)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(20));
+        return await _hub.Clients.Client(connId).InvokeAsync<FileNodeResultDto>(
+            "GetPathInfo", path, false, imageOnly, videoOnly, 0, 0, 0, cts.Token);
+    }
+
+    private async Task EnumerateAsync(string connId, string deviceId, string folder, ActionRunState run,
+        bool wantImages, bool wantVideoThumb, bool wantVideoActual, bool wantAudio, bool wantFiles,
+        ChannelWriter<WorkItem> imageWriter, ChannelWriter<WorkItem> heavyWriter,
+        HashSet<string> seenItems, CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested) return;
+
+        var nodeInfo = await GetPathInfoAsync(connId, folder, ct: ct);
+        if (nodeInfo == null)
+        {
+            run.AppendLog($"Path validation failed for '{folder}' (unreachable)");
+            return;
+        }
+        if (!nodeInfo.Exists)
+        {
+            run.AppendLog($"Invalid folder path: '{folder}' does not exist on the device");
+            return;
+        }
+        if (nodeInfo.CurrentNode is { IsDirectory: false })
+        {
+            run.AppendLog($"'{folder}' is not a folder on the device");
+            return;
+        }
+
+        _cache.SaveFolderCache(deviceId, folder, nodeInfo);
+
+        foreach (var child in nodeInfo.Children ?? new())
+        {
+            if (child.IsDirectory)
+            {
+                await EnumerateAsync(connId, deviceId, child.RelativePath, run,
+                    wantImages, wantVideoThumb, wantVideoActual, wantAudio, wantFiles,
+                    imageWriter, heavyWriter, seenItems, ct);
+                continue;
+            }
+
+            var kind = Classify(child.Name);
+            bool added = false;
+            switch (kind)
+            {
+                case FileKind.Image when wantImages:
+                    added = Queue(imageWriter, child, kind, isThumb: true, seenItems);
+                    break;
+                case FileKind.Video when wantVideoThumb:
+                    added = Queue(heavyWriter, child, kind, isThumb: true, seenItems);
+                    break;
+                case FileKind.Video when wantVideoActual:
+                    added = Queue(heavyWriter, child, kind, isThumb: false, seenItems);
+                    break;
+                case FileKind.Audio when wantAudio:
+                    added = Queue(heavyWriter, child, kind, isThumb: false, seenItems);
+                    break;
+                case FileKind.Other when wantFiles:
+                    added = Queue(heavyWriter, child, kind, isThumb: false, seenItems);
+                    break;
+            }
+
+            if (added)
+            {
+                run.CurrentPath = child.RelativePath;
+                run.DiscoveredFiles++;
+            }
+        }
+    }
+
+    /// <summary>Parent directory ("" for a root-level file) of a storage-relative path.</summary>
+    private static string ParentDir(string path)
+    {
+        string p = path.Trim().TrimStart('/').TrimEnd('/');
+        int idx = p.LastIndexOf('/');
+        return idx < 0 ? "" : p[..idx];
+    }
+
+    /// <summary>
+    /// Queues a single explicit file (fetchFiles action): validates it exists on the
+    /// phone and routes it to the correct worker lane based on its kind and the
+    /// action's Video Fetch Type.
+    /// </summary>
+    private async Task ProduceFromFileAsync(string connId, string deviceId, string file, ActionRunState run,
+        bool wantVideoThumb, bool wantVideoActual,
+        ChannelWriter<WorkItem> imageWriter, ChannelWriter<WorkItem> heavyWriter,
+        HashSet<string> seenItems, CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested) return;
+
+        string relPath = file.Trim().TrimStart('/');
+        if (string.IsNullOrEmpty(relPath)) return;
+
+        var nodeInfo = await GetPathInfoAsync(connId, relPath, ct: ct);
+        if (nodeInfo == null)
+        {
+            run.FailedFiles++;
+            run.AppendLog($"Path validation failed for '{relPath}' (unreachable)");
+            return;
+        }
+        if (!nodeInfo.Exists)
+        {
+            run.FailedFiles++;
+            run.AppendLog($"Invalid file path: '{relPath}' does not exist on the device");
+            return;
+        }
+        if (nodeInfo.CurrentNode is { IsDirectory: true })
+        {
+            run.FailedFiles++;
+            run.AppendLog($"'{relPath}' is a folder, not a file");
+            return;
+        }
+
+        var kind = Classify(nodeInfo.CurrentNode.Name);
+        bool added;
+        switch (kind)
+        {
+            case FileKind.Image:
+                added = Queue(imageWriter, nodeInfo.CurrentNode, kind, isThumb: true, seenItems);
+                break;
+            case FileKind.Video when wantVideoThumb:
+                added = Queue(heavyWriter, nodeInfo.CurrentNode, kind, isThumb: true, seenItems);
+                break;
+            case FileKind.Video when wantVideoActual:
+                added = Queue(heavyWriter, nodeInfo.CurrentNode, kind, isThumb: false, seenItems);
+                break;
+            default:
+                added = Queue(heavyWriter, nodeInfo.CurrentNode, kind, isThumb: false, seenItems);
+                break;
+        }
+
+        if (added)
+        {
+            run.CurrentPath = relPath;
+            run.DiscoveredFiles++;
+        }
+    }
+
+    private static bool Queue(ChannelWriter<WorkItem> w, FileNodeDto node, FileKind kind, bool isThumb, HashSet<string> seenItems)
+    {
+        string key = node.RelativePath + (isThumb ? "#thumb" : "#full");
+        if (!seenItems.Add(key)) return false;
+        return w.TryWrite(new WorkItem { RelPath = node.RelativePath, Name = node.Name, Kind = kind, IsThumb = isThumb });
+    }
+
+    private static FileKind Classify(string name)
+    {
+        string ext = Path.GetExtension(name).ToLowerInvariant();
+        if (ext is ".jpg" or ".jpeg" or ".png" or ".webp" or ".bmp" or ".gif" or ".heic") return FileKind.Image;
+        if (ext is ".mp4" or ".mkv" or ".avi" or ".mov" or ".wmv" or ".webm" or ".flv" or ".m4v" or ".3gp") return FileKind.Video;
+        if (ext is ".mp3" or ".wav" or ".flac" or ".aac" or ".ogg" or ".m4a" or ".opus") return FileKind.Audio;
+        return FileKind.Other;
+    }
+
+    // ── Workers ────────────────────────────────────────────────────────────────
+
+    private static int ResolveWorkerCount(string mode, int custom, int fallback)
+    {
+        if (mode == "custom")
+        {
+            return custom > 0 ? Math.Clamp(custom, 1, 512) : fallback;
+        }
+        return fallback;
+    }
+
+    /// <summary>
+    /// Bounded lane: N workers pull items from the channel and process them one
+    /// at a time, giving at most N concurrent fetches.
+    /// </summary>
+    private static async Task RunBoundedLaneAsync(ChannelReader<WorkItem> reader, Func<WorkItem, Task> handler, int workers, CancellationToken ct)
+    {
+        var tasks = new List<Task>(Math.Max(1, workers));
+        for (int i = 0; i < Math.Max(1, workers); i++)
+        {
+            tasks.Add(Task.Run(async () =>
+            {
+                try
+                {
+                    await foreach (var item in reader.ReadAllAsync(ct))
+                    {
+                        await handler(item);
+                    }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    // Run cancelled (e.g. phone disconnected) — stop quietly.
+                }
+            }, ct));
+        }
+        try { await Task.WhenAll(tasks); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+    }
+
+    /// <summary>
+    /// Unlimited lane: every item that arrives starts its own fetch immediately and
+    /// runs to completion side-by-side with all others — no concurrency cap.
+    /// </summary>
+    private static async Task DrainUnlimitedAsync(ChannelReader<WorkItem> reader, Func<WorkItem, Task> handler, CancellationToken ct)
+    {
+        var pending = new List<Task>();
+        try
+        {
+            await foreach (var item in reader.ReadAllAsync(ct))
+            {
+                pending.Add(handler(item));
+            }
+            await Task.WhenAll(pending);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Run cancelled — in-flight fetches stop via their linked tokens.
+        }
+    }
+
+    private async Task ThumbnailWorkerAsync(ChannelReader<WorkItem> reader, ActionRunState run, string connId, string deviceId,
+        float videoFrame, float thumbQuality, CancellationToken ct)
+    {
+        await RunBoundedLaneAsync(reader,
+            item => ProcessThumbnailAsync(run, connId, deviceId, item, videoFrame, thumbQuality, ct),
+            DefaultImageWorkers, ct);
+    }
+
+    private async Task HeavyWorkerAsync(ChannelReader<WorkItem> reader, ActionRunState run, string connId, string deviceId,
+        Configuration cfg, CancellationToken ct)
+    {
+        await RunBoundedLaneAsync(reader,
+            item => ProcessHeavyAsync(run, connId, deviceId, item, cfg, ct),
+            DefaultHeavyWorkers, ct);
+    }
+
+    private async Task ProcessThumbnailAsync(ActionRunState run, string connId, string deviceId, WorkItem item,
+        float videoFrame, float thumbQuality, CancellationToken ct)
+    {
+        try
+        {
+            await FetchThumbnailAsync(run, connId, deviceId, item, videoFrame, thumbQuality, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            run.FailedFiles++;
+            run.AppendLog($"Thumb fail {item.RelPath}: {ex.Message}");
+        }
+    }
+
+    private async Task ProcessHeavyAsync(ActionRunState run, string connId, string deviceId, WorkItem item, Configuration cfg, CancellationToken ct)
+    {
+        try
+        {
+            if (item.IsThumb)
+            {
+                await FetchThumbnailAsync(run, connId, deviceId, item, cfg.VideoFrameNormalized, cfg.ThumbnailQuality, ct);
+            }
+            else
+            {
+                await FetchFullFileAsync(run, connId, deviceId, item, cfg, ct);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            run.FailedFiles++;
+            run.AppendLog($"Failed {item.RelPath}: {ex.Message}");
+        }
+    }
+
+    private async Task FetchThumbnailAsync(ActionRunState run, string connId, string deviceId, WorkItem item,
+        float videoFrame, float thumbQuality, CancellationToken ct)
+    {
+        bool isVideo = item.Kind == FileKind.Video;
+        float wantFrame = isVideo ? videoFrame : -1f;
+
+        // 1) Never downgrade: skip if the cache already meets the requested settings.
+        _cache.TryGetCachedThumbnail(deviceId, item.RelPath, wantFrame, thumbQuality, out _, out var meta);
+        if (meta != null && CacheManager.IsThumbnailSuitable(meta, wantFrame, thumbQuality, isVideo))
+        {
+            run.SkippedFiles++;
+            return;
+        }
+
+        float fetchQuality = meta != null && meta.Quality > 0f ? Math.Max(thumbQuality, meta.Quality) : thumbQuality;
+        float fetchFrame = isVideo ? wantFrame : -1f;
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, cts.Token);
+
+        var nodeInfo = await _hub.Clients.Client(connId).InvokeAsync<FileNodeResultDto>(
+            "GetPathInfoWithOverride", item.RelPath, true, fetchFrame, fetchQuality, linked.Token);
+
+        if (nodeInfo == null || !nodeInfo.Exists || nodeInfo.CurrentNode == null)
+            throw new IOException("Could not read source for thumbnail");
+        long total = nodeInfo.CurrentNode.Length;
+
+        using var ms = new MemoryStream();
+        long offset = 0;
+        while (offset < total)
+        {
+            var chunk = await _hub.Clients.Client(connId).InvokeAsync<byte[]>(
+                "GetFileChunkWithOverride", item.RelPath, offset, ThumbChunkSize, true, fetchFrame, fetchQuality, linked.Token);
+            if (chunk == null || chunk.Length == 0) break;
+            await ms.WriteAsync(chunk, ct);
+            run.AddBytes(chunk.Length);
+            offset += chunk.Length;
+        }
+
+        if (ms.Length == 0 || offset < total) throw new IOException("Incomplete thumbnail transfer");
+
+        _cache.SaveCachedThumbnail(deviceId, item.RelPath, item.Name, ms.ToArray(),
+            nodeInfo.CurrentNode.OriginalLength > 0 ? nodeInfo.CurrentNode.OriginalLength : total,
+            isVideo ? "video" : "image", fetchFrame, fetchQuality,
+            nodeInfo.CurrentNode.OriginalPreviewLength > 0 ? nodeInfo.CurrentNode.OriginalPreviewLength : 0);
+
+        run.FetchedFiles++;
+        run.AppendLog($"Cached thumb {item.RelPath} (Q={fetchQuality:F2})");
+    }
+
+    private async Task FetchFullFileAsync(ActionRunState run, string connId, string deviceId, WorkItem item, Configuration cfg, CancellationToken ct)
+    {
+        if (item.Kind == FileKind.Video)
+        {
+            float brm = Math.Clamp(cfg.VideoBitrateMultiplier, 0.05f, 1f);
+            float resm = Math.Clamp(cfg.VideoResolutionMultiplier, 0.05f, 1f);
+            if (brm >= 0.999f && resm >= 0.999f)
+            {
+                // Raw mode: the user configured native quality → cache the original file.
+                var meta = _cache.GetFullFileMetadata(deviceId, item.RelPath);
+                if (CacheManager.IsFullFileSuitable(meta, 1f, 1f, 0, 0))
+                { run.SkippedFiles++; return; }
+                await StreamNativeFileAsync(run, connId, deviceId, item, cfg, storeNative: true, ct);
+            }
+            else
+            {
+                int reqBrCap = cfg.BitrateCappingEnabled ? (int)Math.Round(cfg.BitrateCapMbps * 1_000_000) : 0;
+                int reqCeilPx = cfg.ResolutionCeilingEnabled ? cfg.ResolutionCeilingPx : 0;
+                var meta = _cache.GetFullFileMetadata(deviceId, item.RelPath);
+                if (CacheManager.IsFullFileSuitable(meta, brm, resm, reqBrCap, reqCeilPx))
+                { run.SkippedFiles++; return; }
+                await TranscodeAndCacheAsync(run, connId, deviceId, item, cfg, brm, resm, ct);
+            }
+        }
+        else
+        {
+            // Audio / other files: no quality settings — cache once.
+            if (_cache.HasFullFile(deviceId, item.RelPath))
+            { run.SkippedFiles++; return; }
+            await StreamNativeFileAsync(run, connId, deviceId, item, cfg, storeNative: true, ct);
+        }
+    }
+
+    private async Task StreamNativeFileAsync(ActionRunState run, string connId, string deviceId, WorkItem item, Configuration cfg, bool storeNative, CancellationToken ct)
+    {
+        var nodeInfo = await _hub.Clients.Client(connId).InvokeAsync<FileNodeResultDto>("GetPathInfo", item.RelPath, false, ct);
+        if (nodeInfo == null || !nodeInfo.Exists || nodeInfo.CurrentNode == null)
+            throw new IOException("File not found");
+
+        long total = nodeInfo.CurrentNode.Length;
+        string? part = _cache.BeginStreamedFile(deviceId, item.RelPath, allowReplace: true);
+        if (part == null) { run.SkippedFiles++; return; }
+
+        try
+        {
+            long offset = 0;
+            using var fs = File.Create(part);
+            while (offset < total)
+            {
+                var chunk = await _hub.Clients.Client(connId).InvokeAsync<byte[]>("GetFileChunk", item.RelPath, offset, FileChunkSize, false, ct);
+                if (chunk == null || chunk.Length == 0) break;
+                await fs.WriteAsync(chunk, ct);
+                run.AddBytes(chunk.Length);
+                offset += chunk.Length;
+            }
+            await fs.FlushAsync(ct);
+            if (offset < total) throw new IOException($"Incomplete transfer ({offset}/{total} bytes)");
+
+            string mediaType = item.Kind == FileKind.Video ? "video" : item.Kind == FileKind.Audio ? "audio" : "file";
+
+            if (storeNative)
+            {
+                _cache.CompleteFullFile(part, deviceId, item.RelPath, item.Name, offset, total, mediaType,
+                    frame: -1f, quality: 1.0f);
+            }
+            else
+            {
+                _cache.CompleteFullFile(part, deviceId, item.RelPath, item.Name, offset, total, mediaType,
+                    frame: -1f, quality: Math.Clamp(cfg.ThumbnailQuality, 0f, 1f),
+                    bitrateMultiplier: cfg.VideoBitrateMultiplier,
+                    resolutionMultiplier: cfg.VideoResolutionMultiplier,
+                    bitrateCapBps: cfg.BitrateCappingEnabled ? (int)Math.Round(cfg.BitrateCapMbps * 1_000_000) : -1,
+                    resolutionCeilingPx: cfg.ResolutionCeilingEnabled ? cfg.ResolutionCeilingPx : -1);
+            }
+
+            run.FetchedFiles++;
+            run.AppendLog($"Cached file {item.RelPath} ({offset / 1024d / 1024d:F1} MB)");
+        }
+        catch
+        {
+            TryDelete(part);
+            throw;
+        }
+    }
+
+    private async Task TranscodeAndCacheAsync(ActionRunState run, string connId, string deviceId, WorkItem item, Configuration cfg, float brm, float resm, CancellationToken ct)
+    {
+        int capBps = (int)Math.Round(cfg.BitrateCapMbps * 1_000_000);
+        int resCeilPx = cfg.ResolutionCeilingPx;
+
+        var startResp = await _hub.Clients.Client(connId).InvokeCoreAsync<JsonElement>("StartVideoTranscode",
+            new object?[] { item.RelPath, brm, resm, cfg.BitrateCappingEnabled, capBps, cfg.ResolutionCeilingEnabled, resCeilPx }, ct);
+
+        string sessionId = "";
+        string outputPath = "";
+        if (startResp.ValueKind == JsonValueKind.Object)
+        {
+            sessionId = startResp.TryGetProperty("sessionId", out var s) ? s.GetString() ?? "" : "";
+            outputPath = startResp.TryGetProperty("outputPath", out var o) ? o.GetString() ?? "" : "";
+        }
+        if (string.IsNullOrEmpty(sessionId)) throw new IOException("Phone refused to start a transcode");
+
+        int progress = -1;
+        using var pollCts = new CancellationTokenSource(TimeSpan.FromMinutes(30));
+        using var linkedPoll = CancellationTokenSource.CreateLinkedTokenSource(ct, pollCts.Token);
+        while (!linkedPoll.IsCancellationRequested && progress < 100)
+        {
+            var state = await _hub.Clients.Client(connId).InvokeCoreAsync<JsonElement>("GetTranscodeProgress", new object[] { sessionId }, linkedPoll.Token);
+            if (state.ValueKind == JsonValueKind.Object)
+            {
+                progress = state.TryGetProperty("progress", out var p) ? p.GetInt32() : 0;
+                if (state.TryGetProperty("outputPath", out var op) && outputPath.Length == 0) outputPath = op.GetString() ?? "";
+                if (progress < 0) throw new IOException("Phone transcoder reported an error");
+            }
+            if (progress < 100) await Task.Delay(2000, linkedPoll.Token);
+        }
+
+        if (string.IsNullOrEmpty(outputPath))
+            throw new IOException("Transcoder produced no output file");
+
+        var nodeInfo = await _hub.Clients.Client(connId).InvokeAsync<FileNodeResultDto>("GetPathInfo", outputPath, false, ct);
+        if (nodeInfo == null || !nodeInfo.Exists) throw new IOException($"Transcoded file missing: {outputPath}");
+        long total = nodeInfo.CurrentNode?.Length ?? 0;
+
+        string? part = _cache.BeginStreamedFile(deviceId, item.RelPath, allowReplace: true);
+        if (part == null) { run.SkippedFiles++; return; }
+        try
+        {
+            long offset = 0;
+            using var fs = File.Create(part);
+            while (offset < total)
+            {
+                var chunk = await _hub.Clients.Client(connId).InvokeAsync<byte[]>("GetFileChunk", outputPath, offset, FileChunkSize, false, ct);
+                if (chunk == null || chunk.Length == 0) break;
+                await fs.WriteAsync(chunk, ct);
+                run.AddBytes(chunk.Length);
+                offset += chunk.Length;
+            }
+            await fs.FlushAsync(ct);
+            if (offset < total) throw new IOException("Incomplete transcode transfer");
+
+            _cache.CompleteFullFile(part, deviceId, item.RelPath, item.Name, offset, total, "video",
+                frame: -1f, quality: Math.Clamp(cfg.ThumbnailQuality, 0f, 1f),
+                bitrateMultiplier: brm, resolutionMultiplier: resm,
+                bitrateCapBps: cfg.BitrateCappingEnabled ? capBps : -1,
+                resolutionCeilingPx: cfg.ResolutionCeilingEnabled ? resCeilPx : -1);
+
+            run.FetchedFiles++;
+            run.AppendLog($"Cached transcoded video {item.RelPath} ({offset / 1024d / 1024d:F1} MB)");
+        }
+        catch
+        {
+            TryDelete(part);
+            throw;
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+
+    // ── "Fetch the Files" cache-status / dedup helpers ───────────────────────
+
+    /// <summary>
+    /// true when every file in the action's list is already cached at an equal-or-higher
+    /// quality than the requested settings (re-checked on every run, never memoized).
+    /// </summary>
+    private bool AllFilesAlreadyFetched(ActionEntry action, Configuration cfg, string deviceId)
+    {
+        if (action.Files.Count == 0) return false;
+        foreach (var file in action.Files)
+        {
+            string relPath = file.Trim().TrimStart('/');
+            if (string.IsNullOrEmpty(relPath)) continue;
+            var kind = Classify(Path.GetFileName(relPath));
+            switch (kind)
+            {
+                case FileKind.Image:
+                    _cache.TryGetCachedThumbnail(deviceId, relPath, -1f, cfg.ThumbnailQuality, out _, out var imgMeta);
+                    if (!CacheManager.IsThumbnailSuitable(imgMeta, -1f, cfg.ThumbnailQuality, false)) return false;
+                    break;
+                case FileKind.Video when string.Equals(action.VideoFetchType, "actual", StringComparison.OrdinalIgnoreCase):
+                    if (!IsFullFileSuitable(cfg, _cache.GetFullFileMetadata(deviceId, relPath))) return false;
+                    break;
+                case FileKind.Video:
+                    _cache.TryGetCachedThumbnail(deviceId, relPath, cfg.VideoFrameNormalized, cfg.ThumbnailQuality, out _, out var vidMeta);
+                    if (!CacheManager.IsThumbnailSuitable(vidMeta, cfg.VideoFrameNormalized, cfg.ThumbnailQuality, true)) return false;
+                    break;
+                default:
+                    if (!_cache.HasFullFile(deviceId, relPath)) return false;
+                    break;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Per-file fetch status against the current cache (used by the UI to grey out
+    /// files already fetched at an equal-or-higher quality, and to show why).
+    /// </summary>
+    public List<FileFetchStatusDto> CheckFileStatus(ActionEntry action, string deviceId, IReadOnlyList<string> files)
+    {
+        Configuration cfg = ResolveConfig(action, deviceId);
+        var results = new List<FileFetchStatusDto>();
+        foreach (var file in files)
+        {
+            string relPath = file.Trim().TrimStart('/');
+            if (string.IsNullOrEmpty(relPath)) continue;
+            var kind = Classify(Path.GetFileName(relPath));
+            results.Add(ComputeStatus(relPath, kind, action, cfg, deviceId));
+        }
+        return results;
+    }
+
+    private FileFetchStatusDto ComputeStatus(string relPath, FileKind kind, ActionEntry action, Configuration cfg, string deviceId)
+    {
+        string kindName = kind switch
+        {
+            FileKind.Image => "image",
+            FileKind.Video => "video",
+            FileKind.Audio => "audio",
+            _ => "file"
+        };
+
+        switch (kind)
+        {
+            case FileKind.Image:
+                _cache.TryGetCachedThumbnail(deviceId, relPath, -1f, cfg.ThumbnailQuality, out _, out var imgMeta);
+                return ThumbStatus(relPath, kindName, imgMeta, isVideo: false, reqFrame: -1f, cfg.ThumbnailQuality);
+
+            case FileKind.Video:
+                if (string.Equals(action.VideoFetchType, "actual", StringComparison.OrdinalIgnoreCase))
+                {
+                    var meta = _cache.GetFullFileMetadata(deviceId, relPath);
+                    if (!IsFullFileSuitable(cfg, meta))
+                        return new FileFetchStatusDto(relPath, kindName, "fetch", "");
+                    bool higher = IsCachedStrictlyHigher(meta!, cfg);
+                    return new FileFetchStatusDto(relPath, kindName, higher ? "higher" : "same",
+                        higher ? "Higher quality version already Fetched"
+                               : "This file already fetched of equal quality settings");
+                }
+                _cache.TryGetCachedThumbnail(deviceId, relPath, cfg.VideoFrameNormalized, cfg.ThumbnailQuality, out _, out var vidMeta);
+                return ThumbStatus(relPath, kindName, vidMeta, isVideo: true, cfg.VideoFrameNormalized, cfg.ThumbnailQuality);
+
+            default:
+                if (_cache.HasFullFile(deviceId, relPath))
+                    return new FileFetchStatusDto(relPath, kindName, "same", "This file already fetched");
+                return new FileFetchStatusDto(relPath, kindName, "fetch", "");
+        }
+    }
+
+    private static FileFetchStatusDto ThumbStatus(string relPath, string kindName, CacheMetadata? meta, bool isVideo, float reqFrame, float reqQuality)
+    {
+        if (!CacheManager.IsThumbnailSuitable(meta, reqFrame, reqQuality, isVideo))
+            return new FileFetchStatusDto(relPath, kindName, "fetch", "");
+        if (meta!.Quality >= 0.999f)
+            return new FileFetchStatusDto(relPath, kindName, "higher", "High Quality Version already Fetched");
+        return new FileFetchStatusDto(relPath, kindName, "same",
+            $"This file already fetched of same quality {reqQuality:0.00} settings");
+    }
+
+    private static bool IsFullFileSuitable(Configuration cfg, CacheMetadata? meta)
+    {
+        float brm = Math.Clamp(cfg.VideoBitrateMultiplier, 0.05f, 1f);
+        float resm = Math.Clamp(cfg.VideoResolutionMultiplier, 0.05f, 1f);
+        if (brm >= 0.999f && resm >= 0.999f)
+            return CacheManager.IsFullFileSuitable(meta, 1f, 1f, 0, 0);
+        int reqBrCap = cfg.BitrateCappingEnabled ? (int)Math.Round(cfg.BitrateCapMbps * 1_000_000) : 0;
+        int reqCeilPx = cfg.ResolutionCeilingEnabled ? cfg.ResolutionCeilingPx : 0;
+        return CacheManager.IsFullFileSuitable(meta, brm, resm, reqBrCap, reqCeilPx);
+    }
+
+    private static bool IsCachedStrictlyHigher(CacheMetadata meta, Configuration cfg)
+    {
+        float brm = Math.Clamp(cfg.VideoBitrateMultiplier, 0.05f, 1f);
+        float resm = Math.Clamp(cfg.VideoResolutionMultiplier, 0.05f, 1f);
+        int capBps = cfg.BitrateCappingEnabled ? (int)Math.Round(cfg.BitrateCapMbps * 1_000_000) : -1;
+        int ceilPx = cfg.ResolutionCeilingEnabled ? cfg.ResolutionCeilingPx : -1;
+        if (meta.BitrateMultiplier > brm + 0.001f) return true;
+        if (meta.ResolutionMultiplier > resm + 0.001f) return true;
+        if (capBps > 0 && meta.BitrateCapBps > capBps) return true;
+        if (ceilPx > 0 && meta.ResolutionCeilingPx > ceilPx) return true;
+        return false;
+    }
+}
+
+/// <summary>Per-file cache status for "Fetch the Files" grey-out rendering.</summary>
+public record FileFetchStatusDto(string Path, string Kind, string Status, string Note);

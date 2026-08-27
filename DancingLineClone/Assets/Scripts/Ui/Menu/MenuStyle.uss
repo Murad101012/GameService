@@ -1,0 +1,94 @@
+.screen-root {
+    flex-grow: 1;
+    justify-content: center;
+    padding-top: 1.5%;
+    padding-bottom: 1.5%;
+}
+
+.cont-carousel-viewport {
+    flex-direction: row;
+    align-items: center;
+    width: 100%;
+    height: 80%;
+}
+
+.cont-carousel-film-level-viewport {
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    top: 0;
+    bottom: 0;
+    flex-grow: 1;
+    min-width: 100%;
+    height: 100%;
+    background-color: transparent;
+}
+
+.btn-level {
+    position: absolute;
+    align-content: center;
+    height: 80%;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    background-color: white;
+    justify-content: center;
+    align-items: center;
+    flex-shrink: 0;
+    flex-grow: 0;
+    flex-basis: auto;
+}
+
+.btn-level-image {
+    height: 90%;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    -unity-background-scale-mode: scale-and-crop;
+}
+
+.lbl-level-title {
+    color: white;
+    -unity-text-outline-color: gray;
+    -unity-text-outline: gray;
+    -unity-text-outline-width: 2px;
+    opacity: 1;
+    align-self: center;
+    height: auto;
+    font-size: 65px;
+    -unity-font-style: bold;
+    -unity-font-definition: url("project://database/Assets/TextMesh%20Pro/Fonts/LiberationSans.ttf?fileID=12800000&guid=e3265ab4bf004d28a9537516768c1c75&type=3#LiberationSans");
+}
+
+.btn-level-disc-dot {
+    background-color: black;
+    height: 5%;
+    width: 5%;
+    aspect-ratio: 1;
+    border-radius: 50%;
+}
+
+#unity-dragger {
+    border-color: transparent;
+    border-width: 0;
+    margin: 0;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    width: 35px;
+    height: 35px;
+    top: -10%;
+}
+
+#unity-tracker{
+    border-color: papayawhip;
+    background-color: white;
+    height: 50%;
+    margin-left: 1%;
+    margin-right: 1%;
+}
+
+.u-hide {
+    display: none;
+}
+
+.u-flex-spacer {
+    flex-grow: 1;
+}

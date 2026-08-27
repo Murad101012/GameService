@@ -1,0 +1,182 @@
+@page
+@model CachePageModel
+@{
+    ViewData["Title"] = "Cache Management";
+}
+
+<div class="cache-shell">
+    <div class="cache-header glass-card">
+        <div>
+            <h1 class="cache-title">💾 PC Disk Cache & Offline Browser</h1>
+            <p class="cache-subtitle">
+                Manage cached thumbnails, clear space by media type, or merge cache databases between device IDs.
+            </p>
+        </div>
+    <button class="btn btn-accent" onclick="wipeAllCache()">🔥 Wipe Entire Cache</button>
+    <button class="btn btn-primary" onclick="document.getElementById('import-file-input').click()">📥 Import Cache ZIP</button>
+    <input type="file" id="import-file-input" accept=".zip" style="display:none" onchange="importCacheZip(this)" />
+</div>
+
+    @* Cache Merging Section *@
+    <div class="cache-merge-card glass-card">
+        <h2 class="section-title">🔀 Merge Cache Databases</h2>
+        <p class="section-desc">
+            Merge cached files from multiple device IDs into one. Select 2 or more devices below — 
+            all cache data will be merged into the <strong>most recently accessed</strong> device (by file timestamp).
+            If files conflict, the larger version wins.
+        </p>
+
+        @if (!Model.CachedDevices.Any())
+        {
+            <p style="padding:12px;color:var(--text2)">No cached devices found.</p>
+        }
+        else
+        {
+            <div class="merge-checkbox-list">
+                @foreach (var d in Model.CachedDevices)
+                {
+                    <label class="merge-checkbox-item">
+                        <input type="checkbox" class="merge-checkbox" value="@d.DeviceId" data-name="@d.DeviceName" />
+                        <span class="merge-device-name">@d.DeviceName</span>
+                        <span class="merge-device-id">@d.DeviceId[..Math.Min(12, d.DeviceId.Length)]...</span>
+                        <span class="merge-device-size">@((d.TotalSizeBytes / (1024.0 * 1024.0)).ToString("F1")) MB</span>
+                    </label>
+                }
+            </div>
+            <button class="btn btn-primary" style="margin-top:12px" onclick="executeCacheMerge()">🔀 Merge Selected</button>
+        }
+    </div>
+
+    @* Device Cache Breakdown Cards *@
+    <div class="cache-device-grid">
+        @if (!Model.CachedDevices.Any())
+        {
+            <div class="glass-card empty-card">No cached devices found. Browse files to populate local PC cache.</div>
+        }
+        else
+        {
+            @foreach (var dev in Model.CachedDevices)
+            {
+                <div class="cache-device-card glass-card">
+                    <div class="device-card-header">
+                        <span class="device-card-name">📱 @dev.DeviceName</span>
+                        <span class="device-card-id">ID: @dev.DeviceId[..Math.Min(12, dev.DeviceId.Length)]...</span>
+                    </div>
+
+                    <div class="device-stats-list">
+                        <div class="stat-row">
+                            <span>Total Storage:</span>
+                            <strong>@((dev.TotalSizeBytes / (1024.0 * 1024.0)).ToString("F2")) MB (@dev.TotalFileCount files)</strong>
+                        </div>
+                        <div class="stat-row">
+                            <span>🖼️ Images:</span>
+                            <span>@((dev.ImageSizeBytes / (1024.0 * 1024.0)).ToString("F2")) MB (@dev.ImageFileCount files)</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>🎬 Videos:</span>
+                            <span>@((dev.VideoSizeBytes / (1024.0 * 1024.0)).ToString("F2")) MB (@dev.VideoFileCount files)</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>🎵 Audio:</span>
+                            <span>@((dev.AudioSizeBytes / (1024.0 * 1024.0)).ToString("F2")) MB (@dev.AudioFileCount files)</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>📁 Files:</span>
+                            <span>@((dev.FileSizeBytes / (1024.0 * 1024.0)).ToString("F2")) MB (@dev.FileFileCount files)</span>
+                        </div>
+                    </div>
+
+                    <div class="device-card-actions">
+                        <a href="/Offline?deviceId=@dev.DeviceId" class="btn btn-primary btn-sm">🔍 Explore Offline</a>
+                        <a href="/api/cache/export/@dev.DeviceId" class="btn btn-ghost btn-sm" download>📤 Export ZIP</a>
+                        <button class="btn btn-ghost btn-sm" onclick="clearDeviceMediaType('@dev.DeviceId', 'image')">Wipe Images</button>
+                        <button class="btn btn-ghost btn-sm" onclick="clearDeviceMediaType('@dev.DeviceId', 'video')">Wipe Videos</button>
+                        <button class="btn btn-ghost btn-sm" onclick="clearDeviceMediaType('@dev.DeviceId', null)">Wipe Device</button>
+                    </div>
+                </div>
+            }
+        }
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    async function wipeAllCache() {
+        if (!confirm('Are you sure you want to clear all PC disk cache?')) return;
+        const r = await fetch('/api/cache/', { method: 'DELETE' });
+        if (r.ok) location.reload();
+    }
+
+    async function clearDeviceMediaType(deviceId, type) {
+        let msg = type ? `Clear ${type} cache for this device?` : 'Clear all cache for this device?';
+        if (!confirm(msg)) return;
+        const url = `/api/cache/${encodeURIComponent(deviceId)}` + (type ? `?mediaType=${type}` : '');
+        const r = await fetch(url, { method: 'DELETE' });
+        if (r.ok) location.reload();
+    }
+
+    async function executeCacheMerge() {
+        const checkboxes = document.querySelectorAll('.merge-checkbox:checked');
+        if (checkboxes.length < 2) {
+            alert('Please select at least 2 devices to merge.');
+            return;
+        }
+
+        const selected = Array.from(checkboxes).map(cb => ({
+            deviceId: cb.value,
+            deviceName: cb.dataset.name
+        }));
+
+        // Check if all device names match
+        const names = [...new Set(selected.map(s => s.deviceName))];
+        if (names.length > 1) {
+            const msg = 'Selected devices have different names:\n\n' +
+                selected.map(s => `• ${s.deviceName} (${s.deviceId.slice(0,8)}...)`).join('\n') +
+                '\n\nThey may be different phones. Continue anyway?';
+            if (!confirm(msg)) return;
+        }
+
+        const deviceIds = selected.map(s => s.deviceId);
+        const r = await fetch('/api/cache/merge', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deviceIds: deviceIds })
+        });
+
+        if (r.ok) {
+            const data = await r.json();
+            alert(data.message || 'Cache merged successfully!');
+            location.reload();
+        } else {
+            alert('Merge failed: ' + await r.text());
+        }
+    }
+
+    async function importCacheZip(input) {
+        if (!input.files || input.files.length === 0) return;
+        const file = input.files[0];
+        if (!confirm(`Import cache from "${file.name}"? This will add files to the PC cache.`)) {
+            input.value = ''; return;
+        }
+
+        const form = new FormData();
+        form.append('file', file);
+
+        try {
+            const r = await fetch('/api/cache/import', { method: 'POST', body: form, signal: AbortSignal.timeout(120000) });
+            if (r.ok) {
+                const data = await r.json();
+                alert(data.message || 'Import successful!');
+                location.reload();
+            } else {
+                alert('Import failed: ' + await r.text());
+            }
+        } catch (e) {
+            alert('Import error: ' + e.message);
+        }
+        input.value = '';
+    }
+</script>
+}
+
+<a href="/" class="floating-back-btn">← Return to Devices List</a>

@@ -1,0 +1,10 @@
+# ninja log v5
+16	3335	8065708112530985	GameActivity/CMakeFiles/game.dir/UGAInputKeyEvent.cpp.o	f97f099b4f2de3c7
+9	3364	8065708112621509	GameActivity/CMakeFiles/game.dir/UGAEntry.cpp.o	195e30d9f780fd22
+0	3367	8065708112862613	GameActivity/CMakeFiles/game.dir/UGAConfiguration.cpp.o	2ce8a4386d91a1df
+19	3381	8065708112882613	GameActivity/CMakeFiles/game.dir/UGAInputMotionEvent.cpp.o	ba79d56c0a7b86d3
+6	3423	8065708113440531	GameActivity/CMakeFiles/game.dir/UGADebug.cpp.o	e135c34b9891a1f0
+24	3532	8065708114583741	GameActivity/CMakeFiles/game.dir/UGASoftKeyboard.cpp.o	a4618574df3dd4d4
+12	3736	8065708116644923	GameActivity/CMakeFiles/game.dir/UGAInput.cpp.o	f00beb242ea8575f
+4	3859	8065708117834610	GameActivity/CMakeFiles/game.dir/UGAApplication.cpp.o	1af67cef531fd9bf
+3860	3962	8065708118906094	C:/Users/mirze/OneDrive/Documents/DancingLineClone/Library/Bee/Android/Prj/Mono2x/Gradle/unityLibrary/build/intermediates/cxx/RelWithDebInfo/35214p1x/obj/armeabi-v7a/libgame.so	cb2fab7dc3a4fcbd

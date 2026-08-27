@@ -1,0 +1,5 @@
+C:/Users/mirze/OneDrive/Documents/DancingLineClone/.utmp/RelWithDebInfo/g1h4pk3t/armeabi-v7a/CMakeFiles/edit_cache.dir
+C:/Users/mirze/OneDrive/Documents/DancingLineClone/.utmp/RelWithDebInfo/g1h4pk3t/armeabi-v7a/CMakeFiles/rebuild_cache.dir
+C:/Users/mirze/OneDrive/Documents/DancingLineClone/.utmp/RelWithDebInfo/g1h4pk3t/armeabi-v7a/GameActivity/CMakeFiles/game.dir
+C:/Users/mirze/OneDrive/Documents/DancingLineClone/.utmp/RelWithDebInfo/g1h4pk3t/armeabi-v7a/GameActivity/CMakeFiles/edit_cache.dir
+C:/Users/mirze/OneDrive/Documents/DancingLineClone/.utmp/RelWithDebInfo/g1h4pk3t/armeabi-v7a/GameActivity/CMakeFiles/rebuild_cache.dir

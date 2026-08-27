@@ -1,0 +1,999 @@
+@page
+@model ActionsModel
+@{
+    ViewData["Title"] = "Actions";
+}
+
+<div class="actions-shell">
+
+    @* ===== HEADER ===== *@
+    <div class="actions-header glass-card">
+        <div>
+            <h1 class="actions-title">📋 Actions list</h1>
+            <p class="actions-subtitle">
+                Automated fetch jobs that recursively download device folders into the PC offline cache.
+            </p>
+        </div>
+    </div>
+
+    @* ===== ACTIONS LIST (add button is the very last entry) ===== *@
+    <div id="actions-grid" class="actions-grid"></div>
+
+    @* ===== RUN LOG ===== *@
+    <div class="runs-card glass-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <h2 class="section-title" style="margin:0">🕐 Recent Runs</h2>
+            <button class="btn btn-ghost btn-sm" onclick="clearRuns()">🗑 Clear Recent Runs</button>
+        </div>
+        <div id="runs-list"></div>
+    </div>
+
+    @* ===== ADD / EDIT WIZARD (floating window) ===== *@
+    <div id="action-modal" class="actions-modal hidden" onclick="if(event.target===this) closeActionModal()">
+        <div class="actions-modal-card">
+            <button class="actions-modal-close" title="Close" onclick="closeActionModal()">✕</button>
+            <h2 class="actions-modal-title" id="action-modal-title">➕ Add New Action</h2>
+
+            <div class="form-group">
+                <label class="form-label">Action Type</label>
+                <select id="action-type" class="form-select" onchange="onActionTypeChange()">
+                    <option value="fetch">Fetch the folder</option>
+                    <option value="fetchFiles">Fetch the Files</option>
+                </select>
+                <span class="form-hint" id="action-type-hint">Recursively downloads the selected folders into the offline cache.</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Name <span class="form-hint" style="display:inline">optional — defaults to the action type</span></label>
+                <input id="action-name" class="form-select" type="text" placeholder="e.g. Backup Camera Photos" />
+            </div>
+
+            @* Target device selection: cached (saved) + connected devices, On Connect, All Devices *@
+            <div class="form-group">
+                <label class="form-label">Target Device</label>
+                <select id="action-device-target" class="form-select" onchange="onDeviceTargetChange()"></select>
+                <span class="form-hint" id="device-target-hint">None = any device: manual runs pick a connected device when you press Call, On Connect fires for every newly-connected device.</span>
+            </div>
+
+            @* Only for "Fetch the folder" *@
+            <div id="folders-section">
+                <div class="form-group">
+                    <label class="form-label">Folders to Fetch</label>
+                    <div class="folder-check-list" id="folder-checks">
+                        <label class="folder-check home-folder-check"><input type="checkbox" id="folder-home" value="/" onchange="onFolderToggle()" /> 🏠 Home — entire storage root</label>
+                        <label class="folder-check"><input type="checkbox" value="DCIM" onchange="onFolderToggle()" /> 📷 DCIM</label>
+                        <label class="folder-check child"><input type="checkbox" value="DCIM/Camera" onchange="onFolderToggle()" /> &nbsp;&nbsp;├ DCIM/Camera</label>
+                        <label class="folder-check child"><input type="checkbox" value="DCIM/Screenshots" onchange="onFolderToggle()" /> &nbsp;&nbsp;├ DCIM/Screenshots</label>
+                        <label class="folder-check"><input type="checkbox" value="Pictures" onchange="onFolderToggle()" /> 🖼️ Pictures</label>
+                        <label class="folder-check child"><input type="checkbox" value="Pictures/.thumbnails" onchange="onFolderToggle()" /> &nbsp;&nbsp;├ Pictures/.thumbnails</label>
+                        <div class="custom-path-row">
+                            <input id="custom-folder" class="form-select" type="text" placeholder="Custom storage-relative path, e.g. Movies/Clips" style="flex:1" />
+                        </div>
+                    </div>
+                    <span class="form-hint">Checking Home fetches the whole storage root — all other folders are auto-disabled. Checking a parent folder (DCIM / Pictures) includes everything beneath it.</span>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Content to Fetch</label>
+                    <div class="checkbox-grid">
+                        <label class="merge-checkbox-item"><input type="checkbox" id="ct-images" checked /> 🖼️ Images</label>
+                        <label class="merge-checkbox-item"><input type="checkbox" id="ct-vidthumb" checked /> 🎬 Video Thumbnail-only</label>
+                        <label class="merge-checkbox-item"><input type="checkbox" id="ct-vidactual" /> 🎬 Video Actual</label>
+                        <label class="merge-checkbox-item"><input type="checkbox" id="ct-files" /> 📄 Files</label>
+                        <label class="merge-checkbox-item"><input type="checkbox" id="ct-audio" /> 🎵 Audio</label>
+                    </div>
+                </div>
+            </div>
+
+            @* Only for "Fetch the Files" *@
+            <div id="files-section" class="hidden">
+                <div class="form-group">
+                    <label class="form-label">Files to Fetch</label>
+                    <div id="files-list" class="files-list"></div>
+                    <div class="custom-path-row">
+                        <input id="custom-file" class="form-select" type="text" placeholder="Storage-relative file path, e.g. DCIM/Camera/IMG_0001.jpg" style="flex:1" />
+                        <button class="btn btn-ghost btn-sm" type="button" onclick="addFileRow()">➕ Add</button>
+                    </div>
+                    <span class="form-hint">Files already fetched at the same or higher quality are greyed out and skipped on the next run.</span>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Video fetch Type</label>
+                    <div class="radio-row">
+                        <label class="radio-opt"><input type="radio" name="action-vidtype" value="thumbnail" checked /> 🎬 Video Thumbnail-only</label>
+                        <label class="radio-opt"><input type="radio" name="action-vidtype" value="actual" /> 🎬 Video Actual</label>
+                    </div>
+                    <span class="form-hint">Images always fetch a thumbnail; audio/other files always fetch their full bytes. Videos follow this choice.</span>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Trigger</label>
+                <div class="radio-row">
+                    <label class="radio-opt"><input type="radio" name="action-trigger" value="manual" checked onchange="onTriggerChange()" /> ✋ Manual — only when I press Call</label>
+                    <label class="radio-opt"><input type="radio" name="action-trigger" value="onconnect" onchange="onTriggerChange()" /> 🔌 On Connect — run automatically for every newly-connected device</label>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Configuration</label>
+                <div class="radio-row">
+                    <label class="radio-opt"><input type="radio" name="action-config" value="global" checked onchange="onConfigMode()" /> 🌐 Use Global Config (device's current settings)</label>
+                    <label class="radio-opt"><input type="radio" name="action-config" value="custom" onchange="onConfigMode()" /> ⚙️ Custom Overrides</label>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Fetch Concurrency
+                    <span class="form-hint">how many downloads run at once per type. Defaults: images ×5, videos/other ×1.</span>
+                </label>
+                <div class="conv-row">
+                    <span class="conv-label">🖼️ Images</span>
+                    <select id="img-mode" class="form-select" onchange="onConcurrencyMode('img')" style="width:auto">
+                        <option value="default" selected>Default (5)</option>
+                        <option value="custom">Custom</option>
+                        <option value="unlimited">Unlimited</option>
+                    </select>
+                    <input id="img-count" type="number" min="1" max="100" step="1" value="5"
+                           class="limiter-input conv-count hidden" style="width:80px" />
+                </div>
+                <div class="conv-row">
+                    <span class="conv-label">🎬 Videos / other</span>
+                    <select id="hvy-mode" class="form-select" onchange="onConcurrencyMode('hvy')" style="width:auto">
+                        <option value="default" selected>Default (1)</option>
+                        <option value="custom">Custom</option>
+                        <option value="unlimited">Unlimited</option>
+                    </select>
+                    <input id="hvy-count" type="number" min="1" max="50" step="1" value="1"
+                           class="limiter-input conv-count hidden" style="width:80px" />
+                </div>
+            </div>
+
+            <div id="overrides-panel" class="lightbox-overrides hidden" style="flex:none;width:auto;max-height:none">
+                <div class="overrides-title">⚙️ Fetch Overrides
+                    <span class="form-hint" style="display:inline">sent to the phone for this fetch only</span>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Video Frame <span class="form-hint">normalized position in video for thumbnails</span></label>
+                    <div class="slider-row">
+                        <input id="ov-vf" type="range" min="0.05" max="0.5" step="0.01" class="form-slider" value="0.10"
+                               oninput="updateSliderFill(this, 'ov-vf-disp')" />
+                        <span id="ov-vf-disp" class="slider-display">0.10</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Thumbnail Quality <span class="form-hint">0.00 = Lowres, 1.00 = High resolution</span></label>
+                    <div class="slider-row">
+                        <input id="ov-tq" type="range" min="0" max="1" step="0.05" class="form-slider" value="0.00"
+                               oninput="updateSliderFill(this, 'ov-tq-disp')" />
+                        <span id="ov-tq-disp" class="slider-display">0.00</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Video Bitrate Multiplier <span class="form-hint">1.00 = original bitrate (lower = smaller file)</span></label>
+                    <div class="slider-row">
+                        <input id="ov-brm" type="range" min="0.05" max="1.0" step="0.05" class="form-slider" value="0.50"
+                               oninput="updateSliderFill(this, 'ov-brm-disp')" />
+                        <span id="ov-brm-disp" class="slider-display">0.50</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Video Resolution Multiplier <span class="form-hint">1.00 = original resolution</span></label>
+                    <div class="slider-row">
+                        <input id="ov-resm" type="range" min="0.05" max="1.0" step="0.05" class="form-slider" value="1.00"
+                               oninput="updateSliderFill(this, 'ov-resm-disp')" />
+                        <span id="ov-resm-disp" class="slider-display">1.00</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Hard Limits &amp; Capping</label>
+                    <div class="toggle-row">
+                        <label class="toggle-label">
+                            <input id="ov-brcap-en" type="checkbox" checked />
+                            <span>🔒 Bitrate Cap</span>
+                        </label>
+                        <input id="ov-brcap-mbps" type="number" min="0.5" max="100" step="0.5" value="3.0"
+                               style="width:70px;margin-left:8px;padding:2px 6px;border-radius:4px;border:1px solid var(--glass-border);background:var(--surface2);color:var(--text)" />
+                        <span style="margin-left:4px;font-size:0.78rem;color:var(--text2)">Mbps</span>
+                    </div>
+                    <div class="toggle-row">
+                        <label class="toggle-label">
+                            <input id="ov-rescap-en" type="checkbox" checked />
+                            <span>🔒 Resolution Ceiling</span>
+                        </label>
+                        <select id="ov-rescap-px" class="form-select" style="width:auto;margin-left:12px">
+                            <option value="144">144p</option>
+                            <option value="240">240p</option>
+                            <option value="360">360p</option>
+                            <option value="480">480p</option>
+                            <option value="720" selected>720p</option>
+                            <option value="1080">1080p</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group" style="flex-direction:row;gap:10px">
+                <button class="btn btn-primary" style="flex:1" onclick="saveAction()">💾 Save Action</button>
+                <button class="btn btn-ghost" onclick="closeActionModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    @* Hidden device option template (server-rendered, escaped) *@
+    <select id="device-options-template" class="hidden">
+        @foreach (var d in Model.Devices)
+        {
+            <option value="@d.DeviceName" data-device-id="@d.DeviceId">@d.DeviceName</option>
+        }
+    </select>
+    <div id="no-devices-hint" class="hidden" style="color:var(--text2);font-size:0.8rem">No devices connected.</div>
+</div>
+
+@section Scripts {
+<script>
+    const PARENT_CHILDREN = {
+        'DCIM': ['DCIM/Camera', 'DCIM/Screenshots'],
+        'Pictures': ['Pictures/.thumbnails']
+    };
+    const CONTENT_LABELS = {
+        'images': '🖼️ Images',
+        'videoThumb': '🎬 Video Thumbnails',
+        'videoActual': '🎬 Video Actual',
+        'files': '📄 Files',
+        'audio': '🎵 Audio'
+    };
+    let editingActionId = null;
+
+    function concurrencyChip(mode, count, icon, def) {
+        const m = (mode || 'default').toLowerCase();
+        if (m === 'unlimited') return `<span class="action-chip">${icon} ∞ Unlimited</span>`;
+        if (m === 'custom') {
+            const n = parseInt(count, 10);
+            return `<span class="action-chip">${icon} ×${isFinite(n) && n > 0 ? n : '?'}</span>`;
+        }
+        return `<span class="action-chip">${icon} ×${def}</span>`;
+    }
+
+    function onConcurrencyMode(kind) {
+        const prefix = kind === 'img' ? 'img' : 'hvy';
+        const sel = document.getElementById(prefix + '-mode');
+        document.getElementById(prefix + '-count').classList.toggle('hidden', sel.value !== 'custom');
+    }
+
+    function setConcurrencyDefaults() {
+        document.getElementById('img-mode').value = 'default';
+        document.getElementById('hvy-mode').value = 'default';
+        document.getElementById('img-count').value = 5;
+        document.getElementById('hvy-count').value = 1;
+        onConcurrencyMode('img');
+        onConcurrencyMode('hvy');
+    }
+
+    function applyConcurrency(a) {
+        document.getElementById('img-mode').value = (a.imageConcurrencyMode || 'default');
+        document.getElementById('hvy-mode').value = (a.heavyConcurrencyMode || 'default');
+        document.getElementById('img-count').value = a.imageConcurrency > 0 ? a.imageConcurrency : 5;
+        document.getElementById('hvy-count').value = a.heavyConcurrency > 0 ? a.heavyConcurrency : 1;
+        onConcurrencyMode('img');
+        onConcurrencyMode('hvy');
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        refreshActions();
+        refreshRuns();
+        // Load cached + connected device lists so the Target Device dropdown and the
+        // per-card run controls have names/IDs to work with.
+        loadDeviceLists().then(() => refreshActions());
+        setInterval(refreshRuns, 5000);
+    });
+
+    function fetchJson(url, opts) {
+        return fetch(url, opts).then(async r => {
+            if (!r.ok) {
+                let msg = r.status + ' ' + r.statusText;
+                try { msg = (await r.json())?.message || msg; } catch (e) {}
+                throw new Error(msg);
+            }
+            return r.json();
+        });
+    }
+
+    async function refreshActions() {
+        const grid = document.getElementById('actions-grid');
+        try {
+            const list = await fetchJson('/api/actions');
+            const addCard = `<div class="action-card glass-card add-action-card" onclick="openActionModal(null)" title="Add new action">
+                <div style="display:flex;align-items:center;justify-content:center;gap:10px;padding:14px 0;cursor:pointer">
+                    <span style="font-size:1.3rem;color:var(--accent)">➕</span>
+                    <span style="font-weight:700;color:var(--text)">Add new action</span>
+                </div>
+            </div>`;
+            if (!list.length) {
+                grid.innerHTML = addCard;
+                return;
+            }
+            grid.innerHTML = list.map(a => actionCardHtml(a)).join('') + addCard;
+        } catch (e) {
+            grid.innerHTML = `<div class="glass-card empty-card">Failed to load actions: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+
+    function actionCardHtml(a) {
+        const isFilesAction = (a.type || '') === 'fetchFiles';
+        const contentChips = isFilesAction
+            ? [`<span class="action-chip">${a.videoFetchType === 'actual' ? '🎬 Video Actual' : '🎬 Video Thumbnail-only'}</span>`]
+            : (a.contentTypes || []).map(ct => `<span class="action-chip">${CONTENT_LABELS[ct] || escapeHtml(ct)}</span>`).join('');
+        const targetList = isFilesAction ? (a.files || []) : (a.folders || []);
+        const targetIcon = isFilesAction ? '📄' : '📁';
+        const targetChips = targetList.slice(0, 4).map(f => {
+            const label = (f === '/' || f === '') ? 'Home' : f;
+            return `<span class="action-chip">${targetIcon} ${escapeHtml(label)}</span>`;
+        }).join('');
+        const triggerChip = a.trigger === 'onconnect'
+            ? '<span class="action-chip">🔌 On Connect</span>'
+            : '<span class="action-chip">✋ Manual</span>';
+        const configChip = a.useGlobalConfig
+            ? '<span class="action-chip">🌐 Global Config</span>'
+            : '<span class="action-chip">⚙️ Custom Overrides</span>';
+        const deviceChip = deviceTargetChip(a);
+        const imgChip = concurrencyChip(a.imageConcurrencyMode, a.imageConcurrency, '🖼️', 5);
+        const hvyChip = concurrencyChip(a.heavyConcurrencyMode, a.heavyConcurrency, '🎬', 1);
+        const stateChip = a.enabled
+            ? '<span class="action-state enabled">● Enabled</span>'
+            : '<span class="action-state disabled">○ Disabled</span>';
+
+        return `<div class="action-card glass-card" data-action-id="${a.id}">
+            <div class="action-card-header">
+                <span class="action-name">⚡ ${escapeHtml(a.name || (isFilesAction ? 'Fetch the Files' : 'Fetch the folder'))}</span>
+                ${stateChip}
+            </div>
+            <div class="action-meta">${triggerChip} ${configChip} ${deviceChip} ${imgChip} ${hvyChip}</div>
+            ${targetChips ? `<div class="action-chips">${targetChips}${targetList.length > 4 ? `<span class="action-chip">+${targetList.length - 4} more</span>` : ''}</div>` : `<div class="action-chips"><span class="action-chip">${isFilesAction ? 'No files' : 'No folders'}</span></div>`}
+            <div class="action-chips">${contentChips || '<span class="action-chip">Nothing selected</span>'}</div>
+            <div class="action-actions-row">
+                <button class="btn btn-ghost btn-sm" onclick="openActionModal('${a.id}')">✏️ Edit</button>
+                <button class="btn btn-ghost btn-sm" onclick="toggleAction('${a.id}', ${!a.enabled})">${a.enabled ? '⏸ Disable' : '▶ Enable'}</button>
+                <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="removeAction('${a.id}')">🗑 Remove</button>
+                <span style="flex:1"></span>
+                ${a.trigger === 'onconnect'
+                    ? '<span style="color:var(--text2);font-size:0.8rem">Runs automatically on connect</span>'
+                    : deviceRunControl(a)}
+            </div>
+        </div>`;
+    }
+
+    function deviceTargetChip(a) {
+        const target = (a.deviceTarget || 'none').toLowerCase();
+        if (target === 'all') return '<span class="action-chip">🌐 All Devices</span>';
+        if (target === 'onconnect') return '<span class="action-chip">🔌 On Connect</span>';
+        if (target === 'device' && a.deviceId) {
+            const name = findDeviceName(a.deviceId) || a.deviceId;
+            return `<span class="action-chip">📱 ${escapeHtml(name)}</span>`;
+        }
+        return '';
+    }
+
+    function findDeviceName(deviceId) {
+        for (const d of cachedDeviceList) if (d.id === deviceId) return d.name;
+        for (const d of connectedDeviceList) if (d.id === deviceId) return d.name;
+        return null;
+    }
+
+    function deviceRunControl(a) {
+        const target = (a.deviceTarget || 'none').toLowerCase();
+
+        // All Devices: single button, no device picker.
+        if (target === 'all') {
+            const n = connectedDeviceList.length;
+            return `<button class="btn btn-primary btn-sm" onclick="runAction('${a.id}')">🚀 Call All${n ? ` (${n})` : ''}</button>`;
+        }
+
+        // Bound to a single device (cached or connected): fire at that device.
+        if (target === 'device' && a.deviceId) {
+            const dev = connectedDeviceList.find(d => d.id === a.deviceId);
+            if (!dev) {
+                return '<span style="color:var(--text2);font-size:0.8rem">⏳ Waiting for device to connect</span>';
+            }
+            return `<button class="btn btn-primary btn-sm" onclick="runAction('${a.id}', '${escapeHtml(dev.id)}')">🚀 Call ${escapeHtml(dev.name)}</button>`;
+        }
+
+        const template = document.getElementById('device-options-template');
+        const hasDevices = template && template.options.length > 0;
+        if (!hasDevices) {
+            return '<span style="color:var(--text2);font-size:0.8rem">No device connected</span>';
+        }
+        const opts = Array.from(template.options).map(o =>
+            `<option value="${o.value.replace(/"/g, '&quot;')}">${o.textContent}</option>`).join('');
+        return `<select class="form-select run-device-select" data-action-id="${a.id}" style="width:auto;padding:6px 10px;max-width:180px">${opts}</select>
+                <button class="btn btn-primary btn-sm" onclick="runAction('${a.id}')">🚀 Call</button>`;
+    }
+
+    async function runAction(id, deviceIdOverride) {
+        let device = null;
+        const sel = document.querySelector(`.run-device-select[data-action-id="${id}"]`);
+        if (sel && sel.value) {
+            device = sel.value;
+        } else if (deviceIdOverride) {
+            // Device-bound target: resolve the connected device name from its ID.
+            const dev = connectedDeviceList.find(d => d.id === deviceIdOverride);
+            device = dev ? dev.name : deviceIdOverride;
+        }
+        if (!device && !sel) {
+            // All-Devices target: no device chosen.
+            const list = await new Promise(async (resolve) => {
+                try { resolve(await fetchJson('/api/actions')); } catch (e) { resolve([]); }
+            });
+            const a = list.find(x => x.id === id);
+            const isAll = a && (a.deviceTarget || '').toLowerCase() === 'all';
+            if (!isAll) { showToast('No device connected to run against.', 'warn'); return; }
+            try {
+                const run = await fetchJson(`/api/actions/${id}/run`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ device: null, allDevices: true })
+                });
+                const count = (run.runs || []).length;
+                showToast(`Run started for '${run.runs?.[0]?.actionName || 'action'}' on ${count} device(s)`, 'ok');
+                refreshRuns();
+                refreshActions();
+                return;
+            } catch (e) {
+                showToast('Failed to start run: ' + e.message, 'err', 6000);
+                return;
+            }
+        }
+        if (!device) { showToast('No device connected to run against.', 'warn'); return; }
+        try {
+            const run = await fetchJson(`/api/actions/${id}/run`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ device: device })
+            });
+            showToast(`Run ${run.runId} started for '${run.actionName}' on ${run.deviceName}`, 'ok');
+            refreshRuns();
+        } catch (e) {
+            showToast('Failed to start run: ' + e.message, 'err', 6000);
+        }
+    }
+
+    async function toggleAction(id, enabled) {
+        try {
+            await fetchJson(`/api/actions/${id}/enabled`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled })
+            });
+            refreshActions();
+        } catch (e) {
+            showToast('Failed: ' + e.message, 'err');
+        }
+    }
+
+    async function removeAction(id) {
+        if (!confirm('Remove this action?')) return;
+        try {
+            await fetchJson(`/api/actions/${id}`, { method: 'DELETE' });
+            refreshActions();
+        } catch (e) {
+            showToast('Failed: ' + e.message, 'err');
+        }
+    }
+
+    /* ============ ADD / EDIT MODAL ============ */
+
+    function openActionModal(id) {
+        editingActionId = id || null;
+        const title = document.getElementById('action-modal-title');
+        title.textContent = id ? '✏️ Edit Action' : '➕ Add New Action';
+
+        document.getElementById('action-name').value = '';
+        document.getElementById('action-type').value = 'fetch';
+        window._fetchStatusDeviceId = null;
+        document.querySelectorAll('#folder-checks input[type="checkbox"]').forEach(c => c.checked = false);
+        document.getElementById('custom-folder').value = '';
+        ['ct-images','ct-vidthumb','ct-vidactual','ct-files','ct-audio'].forEach(i => document.getElementById(i).checked = false);
+        document.getElementById('ct-images').checked = true;
+        document.getElementById('ct-vidthumb').checked = true;
+        document.querySelector('input[name="action-trigger"][value="manual"]').checked = true;
+        document.querySelector('input[name="action-config"][value="global"]').checked = true;
+        document.querySelector('input[name="action-vidtype"][value="thumbnail"]').checked = true;
+        setFilesList([]);
+        setOverrideDefaults();
+        setConcurrencyDefaults();
+        onFolderToggle();
+        onConfigMode();
+
+        // Target device dropdown starts with the static options, then is repopulated
+        // with the live cached/connected lists so a specific device can be chosen.
+        const devTarget = document.getElementById('action-device-target');
+        if (devTarget) {
+            devTarget.innerHTML = buildDeviceTargetOptions();
+            devTarget.value = 'none';
+            onDeviceTargetChange();
+        }
+
+        // Refresh cached/connected lists so the dropdown is up to date, then restore
+        // the selection for the action being edited.
+        Promise.resolve(loadDeviceLists()).then(() => {
+            const devTarget = document.getElementById('action-device-target');
+            if (!devTarget) return;
+            devTarget.innerHTML = buildDeviceTargetOptions();
+            devTarget.value = 'none';
+            if (id) {
+                fetchJson('/api/actions').then(list => {
+                    const a = list.find(x => x.id === id);
+                    if (a) populateActionForm(a);
+                }).catch(() => {});
+            }
+            onDeviceTargetChange();
+        });
+
+        onActionTypeChange();
+        document.getElementById('action-modal').classList.remove('hidden');
+    }
+
+    function populateActionForm(a) {
+        document.getElementById('action-name').value = a.name || '';
+        document.getElementById('action-type').value = a.type || 'fetch';
+        window._fetchStatusDeviceId = a.deviceId || null;
+        (a.folders || []).forEach(f => {
+            if (f === '/' || f === '') {
+                document.getElementById('folder-home').checked = true;
+                return;
+            }
+            const box = document.querySelector(`#folder-checks input[value="${CSS.escape(f)}"]`);
+            if (box) box.checked = true;
+            else if (f && !f.startsWith('DCIM/') && !f.startsWith('Pictures/')) document.getElementById('custom-folder').value = f;
+        });
+        if (a.type === 'fetchFiles') {
+            setFilesList(a.files || []);
+            const vt = ((a.videoFetchType || 'thumbnail').toLowerCase() === 'actual') ? 'actual' : 'thumbnail';
+            document.querySelector(`input[name="action-vidtype"][value="${vt}"]`).checked = true;
+        }
+        const cts = a.contentTypes || [];
+        document.getElementById('ct-images').checked = cts.includes('images');
+        document.getElementById('ct-vidthumb').checked = cts.includes('videoThumb');
+        document.getElementById('ct-vidactual').checked = cts.includes('videoActual');
+        document.getElementById('ct-files').checked = cts.includes('files');
+        document.getElementById('ct-audio').checked = cts.includes('audio');
+        document.querySelector(`input[name="action-trigger"][value="${a.trigger || 'manual'}"]`).checked = true;
+        if (a.useGlobalConfig) {
+            document.querySelector('input[name="action-config"][value="global"]').checked = true;
+        } else {
+            document.querySelector('input[name="action-config"][value="custom"]').checked = true;
+            applyOverrides(a.overrides || {});
+        }
+        applyConcurrency(a);
+        setDeviceTargetFromAction(a);
+        onFolderToggle();
+        onConfigMode();
+        onActionTypeChange();
+        refreshFileStatus();
+    }
+
+    function setDeviceTargetFromAction(a) {
+        const devTarget = document.getElementById('action-device-target');
+        if (!devTarget) return;
+        const target = (a.deviceTarget || 'none').toLowerCase();
+        let value = 'none';
+        if (target === 'all') value = 'all';
+        else if (target === 'onconnect') value = 'onconnect';
+        else if (target === 'device' && a.deviceId) {
+            const opt = devTarget.querySelector(`option[value="device:${CSS.escape(a.deviceId)}"]`);
+            if (opt) value = opt.value;
+            else {
+                // Device not in either list (e.g. cache cleared) — offer it anyway.
+                const optEl = document.createElement('option');
+                optEl.value = 'device:' + a.deviceId;
+                optEl.textContent = '📱 ' + a.deviceId;
+                devTarget.appendChild(optEl);
+                value = optEl.value;
+            }
+        }
+        devTarget.value = value;
+        onDeviceTargetChange();
+    }
+
+    function closeActionModal() {
+        document.getElementById('action-modal').classList.add('hidden');
+        editingActionId = null;
+    }
+
+    function onActionTypeChange() {
+        const type = document.getElementById('action-type').value;
+        document.getElementById('folders-section').classList.toggle('hidden', type !== 'fetch');
+        document.getElementById('files-section').classList.toggle('hidden', type !== 'fetchFiles');
+        document.getElementById('action-type-hint').textContent =
+            type === 'fetchFiles'
+                ? 'Downloads exactly the files you list into the offline cache.'
+                : 'Recursively downloads the selected folders into the offline cache.';
+        document.getElementById('action-modal-title').textContent = editingActionId ? '✏️ Edit Action' : '➕ Add New Action';
+    }
+
+    /* ── "Fetch the Files" editor ──────────────────────────────────────────── */
+    function setFilesList(files) {
+        const list = document.getElementById('files-list');
+        if (!list) return;
+        list.innerHTML = '';
+        (files || []).forEach(f => addFileRow(f, true));
+        refreshFileStatus();
+    }
+
+    function addFileRow(path, bulk) {
+        const list = document.getElementById('files-list');
+        if (!list) return;
+        const value = (path || document.getElementById('custom-file').value).trim().replace(/^\/+|\/+$/g, '');
+        if (!value) { showToast('Enter a file path.', 'warn'); return; }
+        const row = document.createElement('div');
+        row.className = 'file-row';
+        row.innerHTML = `${wizardFileRowThumb(value)}
+            <span class="file-row-path" title="${escapeHtml(value)}">${escapeHtml(value)}</span>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="removeFileRow(this)">✕</button>`;
+        list.appendChild(row);
+        if (!path) document.getElementById('custom-file').value = '';
+        if (!bulk) refreshFileStatus();
+    }
+
+    // Little cached thumbnail (if available) next to the file name. Only possible
+    // when the action knows which device's cache to look at.
+    function wizardFileRowThumb(path) {
+        const deviceId = window._fetchStatusDeviceId;
+        if (!deviceId || !path) return '';
+        return `<img class="file-row-thumb" src="/api/thumb/${encodeURIComponent(deviceId)}?path=${encodeURIComponent(path)}&bestCache=1&frameOverride=-1&qualityOverride=-1" loading="lazy" alt="" onerror="this.remove()" />`;
+    }
+
+    function removeFileRow(btn) {
+        btn.closest('.file-row').remove();
+        refreshFileStatus();
+    }
+
+    function collectFiles() {
+        return Array.from(document.querySelectorAll('#files-list .file-row-path')).map(el => el.textContent.trim());
+    }
+
+    function currentOverrides() {
+        return {
+            videoFrameNormalized: parseFloat(document.getElementById('ov-vf').value),
+            thumbnailQuality: parseFloat(document.getElementById('ov-tq').value),
+            videoBitrateMultiplier: parseFloat(document.getElementById('ov-brm').value),
+            videoResolutionMultiplier: parseFloat(document.getElementById('ov-resm').value),
+            bitrateCappingEnabled: document.getElementById('ov-brcap-en').checked,
+            bitrateCapMbps: parseFloat(document.getElementById('ov-brcap-mbps').value) || 3.0,
+            resolutionCeilingEnabled: document.getElementById('ov-rescap-en').checked,
+            resolutionCeilingPx: parseInt(document.getElementById('ov-rescap-px').value, 10) || 720
+        };
+    }
+
+    // Grey out files already cached at equal/higher quality. Only possible when the
+    // action knows which device's cache to look at (actions created from Explore Offline).
+    async function refreshFileStatus() {
+        if (document.getElementById('action-type').value !== 'fetchFiles') return;
+        const files = collectFiles();
+        const rows = Array.from(document.querySelectorAll('#files-list .file-row'));
+        rows.forEach(r => { r.classList.remove('fetch-greyed', 'fetch-to-do'); r.title = ''; });
+        if (!files.length || !window._fetchStatusDeviceId) return;
+
+        try {
+            const r = await fetch('/api/actions/cache-status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    deviceId: window._fetchStatusDeviceId,
+                    files,
+                    videoFetchType: document.querySelector('input[name="action-vidtype"]:checked')?.value || 'thumbnail',
+                    useGlobalConfig: document.querySelector('input[name="action-config"]:checked')?.value === 'global',
+                    overrides: currentOverrides()
+                })
+            });
+            if (!r.ok) return;
+            const status = await r.json();
+            const byPath = new Map(status.map(s => [s.path.toLowerCase(), s]));
+            rows.forEach(r => {
+                const p = r.querySelector('.file-row-path');
+                const s = byPath.get(p.textContent.trim().toLowerCase());
+                if (!s || s.status === 'fetch') return;
+                r.classList.add('fetch-greyed');
+                r.title = s.note || '';
+            });
+        } catch { }
+    }
+
+    /* Parent checkbox → disable children already covered by parent selection.
+       Home (storage root) → disables every other folder checkbox. */
+    function onFolderToggle() {
+        const home = document.getElementById('folder-home');
+        const homeOn = home && home.checked;
+        document.querySelectorAll('#folder-checks input[type="checkbox"]').forEach(c => {
+            if (c === home) return;
+            const label = c.closest('label');
+            if (homeOn) {
+                c.checked = false;
+                c.disabled = true;
+                label.classList.add('disabled');
+            } else {
+                c.disabled = false;
+                label.classList.remove('disabled');
+            }
+        });
+        const customInput = document.getElementById('custom-folder');
+        if (customInput) {
+            const row = customInput.closest('.custom-path-row');
+            customInput.disabled = homeOn;
+            if (row) row.classList.toggle('disabled', homeOn);
+            if (homeOn) customInput.value = '';
+        }
+        if (homeOn) return;
+        Object.entries(PARENT_CHILDREN).forEach(([parent, children]) => {
+            const p = document.querySelector(`#folder-checks input[value="${parent}"]`);
+            children.forEach(child => {
+                const c = document.querySelector(`#folder-checks input[value="${child}"]`);
+                const label = c.closest('label');
+                if (p && p.checked) {
+                    c.checked = false;
+                    c.disabled = true;
+                    label.classList.add('disabled');
+                } else {
+                    c.disabled = false;
+                    label.classList.remove('disabled');
+                }
+            });
+        });
+    }
+
+    function onTriggerChange() {}
+    function onConfigMode() {
+        const mode = document.querySelector('input[name="action-config"]:checked').value;
+        document.getElementById('overrides-panel').classList.toggle('hidden', mode !== 'custom');
+    }
+
+    /* ── Target Device selection ──────────────────────────────────────────────
+       Populated from cached (saved) devices + currently connected devices.
+       Values:
+         "none"      → unbound (any device)
+         "all"       → All Devices (fires on every connected device)
+         "onconnect" → On Connect (auto-run for every newly connected device)
+         "device:<id>" → bound to a single device (cached or connected)
+    */
+    let cachedDeviceList = [];
+    let connectedDeviceList = [];
+
+    async function loadDeviceLists() {
+        try {
+            const cached = await fetchJson('/api/cache/devices');
+            cachedDeviceList = (cached || []).map(d => ({
+                id: d.deviceId,
+                name: d.deviceName || d.deviceId
+            }));
+        } catch (e) {
+            cachedDeviceList = [];
+        }
+        try {
+            const connected = await fetchJson('/api/devices');
+            connectedDeviceList = (connected || []).map(d => ({
+                id: d.deviceId,
+                name: d.deviceName || d.deviceId
+            }));
+        } catch (e) {
+            connectedDeviceList = [];
+        }
+    }
+
+    function buildDeviceTargetOptions() {
+        const cachedIds = new Set(cachedDeviceList.map(d => d.id).filter(Boolean));
+        // Connected devices only shown when their ID differs from the cached list.
+        const connectedOnly = connectedDeviceList.filter(d => d.id && !cachedIds.has(d.id));
+
+        let html = '<option value="none">None — any device</option>';
+        html += '<option value="all">🌐 All Devices</option>';
+        html += '<option value="onconnect">🔌 On Connect</option>';
+
+        if (cachedDeviceList.length) {
+            html += `<optgroup label="💾 Saved devices (offline cache)">`;
+            html += cachedDeviceList.map(d =>
+                `<option value="device:${escapeHtml(d.id)}">📱 ${escapeHtml(d.name)}</option>`).join('');
+            html += '</optgroup>';
+        }
+        if (connectedOnly.length) {
+            html += `<optgroup label="📡 Connected devices">`;
+            html += connectedOnly.map(d =>
+                `<option value="device:${escapeHtml(d.id)}">📱 ${escapeHtml(d.name)}</option>`).join('');
+            html += '</optgroup>';
+        }
+        return html;
+    }
+
+    function onDeviceTargetChange() {
+        const sel = document.getElementById('action-device-target');
+        const hint = document.getElementById('device-target-hint');
+        const value = sel ? (sel.value || 'none') : 'none';
+        let text = 'None = any device: manual runs pick a connected device when you press Call, On Connect fires for every newly-connected device.';
+        if (value === 'all') {
+            text = '🌐 All Devices — pressing Call fires this action on every currently-connected device at once.';
+        } else if (value === 'onconnect') {
+            text = '🔌 On Connect — runs automatically for every device that connects.';
+        } else if (value.startsWith('device:')) {
+            text = '📱 Bound to one device. If it is offline now (saved device), it will be ready to fire — combine with On Connect and it auto-runs the moment that device returns.';
+        }
+        if (hint) hint.textContent = text;
+    }
+
+    function selectedDeviceTargetValue() {
+        const sel = document.getElementById('action-device-target');
+        return sel ? (sel.value || 'none') : 'none';
+    }
+
+    function setOverrideDefaults() {
+        document.getElementById('ov-vf').value = 0.10;
+        document.getElementById('ov-vf-disp').textContent = '0.10';
+        document.getElementById('ov-tq').value = 0.00;
+        document.getElementById('ov-tq-disp').textContent = '0.00';
+        document.getElementById('ov-brm').value = 0.50;
+        document.getElementById('ov-brm-disp').textContent = '0.50';
+        document.getElementById('ov-resm').value = 1.00;
+        document.getElementById('ov-resm-disp').textContent = '1.00';
+        document.getElementById('ov-brcap-en').checked = true;
+        document.getElementById('ov-brcap-mbps').value = 3.0;
+        document.getElementById('ov-rescap-en').checked = true;
+        document.getElementById('ov-rescap-px').value = '720';
+        ['ov-vf','ov-tq','ov-brm','ov-resm'].forEach(id => updateSliderFill(document.getElementById(id), id + '-disp'));
+    }
+
+    function applyOverrides(o) {
+        document.getElementById('ov-vf').value = o.videoFrameNormalized != null ? o.videoFrameNormalized : 0.10;
+        document.getElementById('ov-vf-disp').textContent = document.getElementById('ov-vf').value;
+        document.getElementById('ov-tq').value = o.thumbnailQuality != null ? o.thumbnailQuality : 0.00;
+        document.getElementById('ov-tq-disp').textContent = document.getElementById('ov-tq').value;
+        document.getElementById('ov-brm').value = o.videoBitrateMultiplier != null ? o.videoBitrateMultiplier : 0.50;
+        document.getElementById('ov-brm-disp').textContent = document.getElementById('ov-brm').value;
+        document.getElementById('ov-resm').value = o.videoResolutionMultiplier != null ? o.videoResolutionMultiplier : 1.00;
+        document.getElementById('ov-resm-disp').textContent = document.getElementById('ov-resm').value;
+        document.getElementById('ov-brcap-en').checked = o.bitrateCappingEnabled !== false;
+        document.getElementById('ov-brcap-mbps').value = o.bitrateCapMbps != null ? o.bitrateCapMbps : 3.0;
+        document.getElementById('ov-rescap-en').checked = o.resolutionCeilingEnabled !== false;
+        document.getElementById('ov-rescap-px').value = o.resolutionCeilingPx != null ? String(o.resolutionCeilingPx) : '720';
+        ['ov-vf','ov-tq','ov-brm','ov-resm'].forEach(id => updateSliderFill(document.getElementById(id), id + '-disp'));
+    }
+
+    async function saveAction() {
+        const type = document.getElementById('action-type').value;
+        let folders = [];
+        let contentTypes = [];
+        let files = [];
+        let videoFetchType = 'thumbnail';
+
+        if (type === 'fetchFiles') {
+            files = collectFiles();
+            if (!files.length) { showToast('Add at least one file.', 'warn'); return; }
+            videoFetchType = document.querySelector('input[name="action-vidtype"]:checked').value;
+        } else {
+            folders = Array.from(document.querySelectorAll('#folder-checks input[type="checkbox"]:checked')).map(c => c.value);
+            const custom = document.getElementById('custom-folder').value.trim().replace(/^\/+|\/+$/g, '');
+            if (custom && !folders.includes(custom)) folders.push(custom);
+
+            if (!folders.length) { showToast('Select at least one folder.', 'warn'); return; }
+
+            // Home (storage root) supersedes every per-folder selection: it walks the
+            // whole / tree, so the folder list is kept to the single root marker.
+            if (document.getElementById('folder-home').checked) folders = ['/'];
+
+            const CT_IDS = { images: 'ct-images', videoThumb: 'ct-vidthumb', videoActual: 'ct-vidactual', files: 'ct-files', audio: 'ct-audio' };
+            contentTypes = Object.keys(CT_IDS).filter(id => document.getElementById(CT_IDS[id]).checked);
+            if (!contentTypes.length) { showToast('Select at least one content type.', 'warn'); return; }
+        }
+
+        const useGlobal = document.querySelector('input[name="action-config"]:checked').value === 'global';
+        let trigger = document.querySelector('input[name="action-trigger"]:checked').value;
+
+        // Target device: derive deviceId/deviceTarget from the dropdown selection.
+        const deviceTargetValue = selectedDeviceTargetValue();
+        let deviceId = null;
+        let deviceTarget = 'none';
+        if (deviceTargetValue === 'all') {
+            deviceTarget = 'all';
+            // All Devices + On Connect is the same as plain On Connect.
+        } else if (deviceTargetValue === 'onconnect') {
+            deviceTarget = 'none';
+            deviceId = null;
+            trigger = 'onconnect';
+        } else if (deviceTargetValue.startsWith('device:')) {
+            deviceId = deviceTargetValue.slice('device:'.length);
+            deviceTarget = 'device';
+            // Binding a cached device: On Connect means "run the moment it returns".
+        }
+
+        const imgMode = document.getElementById('img-mode').value;
+        const hvyMode = document.getElementById('hvy-mode').value;
+        if (imgMode === 'custom' && (!(document.getElementById('img-count').value > 0) || document.getElementById('img-count').value > 100)) {
+            showToast('Image concurrency must be between 1 and 100.', 'warn'); return;
+        }
+        if (hvyMode === 'custom' && (!(document.getElementById('hvy-count').value > 0) || document.getElementById('hvy-count').value > 50)) {
+            showToast('Video/other concurrency must be between 1 and 50.', 'warn'); return;
+        }
+
+        const payload = {
+            id: editingActionId || '',
+            name: document.getElementById('action-name').value.trim(),
+            type,
+            folders,
+            files,
+            videoFetchType,
+            contentTypes,
+            deviceId: deviceId,
+            deviceTarget,
+            trigger,
+            enabled: true,
+            useGlobalConfig: useGlobal,
+            imageConcurrencyMode: imgMode,
+            imageConcurrency: parseInt(document.getElementById('img-count').value, 10) || 5,
+            heavyConcurrencyMode: hvyMode,
+            heavyConcurrency: parseInt(document.getElementById('hvy-count').value, 10) || 1,
+            overrides: currentOverrides()
+        };
+
+        try {
+            await fetchJson('/api/actions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            closeActionModal();
+            refreshActions();
+            showToast('Action saved', 'ok');
+        } catch (e) {
+            showToast('Failed to save: ' + e.message, 'err', 6000);
+        }
+    }
+
+    /* ============ RUNS ============ */
+
+    async function refreshRuns() {
+        const el = document.getElementById('runs-list');
+        try {
+            const runs = await fetchJson('/api/actions/runs');
+            if (!runs.length) {
+                el.innerHTML = '<p style="color:var(--text2);font-size:0.85rem">No runs yet.</p>';
+                return;
+            }
+            el.innerHTML = runs.map(r => runHtml(r)).join('');
+        } catch (e) {
+            el.innerHTML = '<p style="color:var(--text2);font-size:0.85rem">Failed to load runs.</p>';
+        }
+    }
+
+    function runHtml(r) {
+        const statusClass = (r.status || '').toLowerCase();
+        const started = r.startedUtc ? new Date(r.startedUtc).toLocaleString() : '—';
+        const ended = r.endedUtc ? new Date(r.endedUtc).toLocaleString() : '';
+        const log = (r.log || []).map(l => `[${l.timeUtc ? new Date(l.timeUtc).toLocaleTimeString() : ''}] ${l.message}`).join('\n');
+        return `<div class="run-item">
+            <div class="run-header">
+                <span class="run-status ${statusClass}">${escapeHtml(r.status || '')}</span>
+                <strong>${escapeHtml(r.actionName)}</strong>
+                <span style="color:var(--text2);font-size:0.8rem">📱 ${escapeHtml(r.deviceName)}</span>
+                <span style="color:var(--text2);font-size:0.78rem">${started}${ended ? ' → ' + ended : ''}</span>
+            </div>
+            ${r.message ? `<div class="run-reason ${statusClass === 'failed' ? 'run-reason-failed' : ''}">${escapeHtml(r.message)}</div>` : ''}
+            <div class="run-stats">
+                Discovered: ${r.discoveredFiles ?? 0} · Fetched: ${r.fetchedFiles ?? 0} · Skipped: ${r.skippedFiles ?? 0} · Failed: ${r.failedFiles ?? 0}
+                ${r.currentPath ? ` · <span style="color:var(--text2)">${escapeHtml(r.currentPath)}</span>` : ''}
+            </div>
+            ${log ? `<pre class="run-log">${escapeHtml(log)}</pre>` : ''}
+        </div>`;
+    }
+
+    async function clearRuns() {
+        if (!confirm('Clear the recent runs history?')) return;
+        try {
+            await fetchJson('/api/actions/runs', { method: 'DELETE' });
+            document.getElementById('runs-list').innerHTML = '<p style="color:var(--text2);font-size:0.85rem">No runs yet.</p>';
+        } catch (e) {
+            showToast('Failed: ' + e.message, 'err');
+        }
+    }
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+</script>
+}

@@ -1,0 +1,77 @@
+/// DUMP EVERYTHING — skip JSON parsing entirely, just pack raw files
+/// AND try to build a human-readable copy using the metadata files
+public byte[]? ExportDeviceCache(string deviceId)
+{
+    string dir = Path.Combine(CacheBaseDir, deviceId);
+    if (!Directory.Exists(dir)) return null;
+
+    string deviceName = deviceId;
+    string nameFile = Path.Combine(dir, "device_name.txt");
+    if (File.Exists(nameFile))
+        deviceName = File.ReadAllText(nameFile).Trim();
+
+    using var ms = new MemoryStream();
+    using (var zip = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, true))
+    {
+        // details.txt
+        var detailsEntry = zip.CreateEntry("details.txt", System.IO.Compression.CompressionLevel.Fastest);
+        using (var w = new StreamWriter(detailsEntry.Open()))
+        {
+            w.WriteLine($"DeviceName: {deviceName}");
+            w.WriteLine($"DeviceId: {deviceId}");
+            w.WriteLine($"ExportedUtc: {DateTime.UtcNow:O}");
+        }
+
+        // Step 1: build a map of hash -> metadata by reading ALL .json files
+        var hashToMeta = new Dictionary<string, CacheMetadata>();
+        var jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+        foreach (var jsonPath in Directory.GetFiles(dir, "*.json"))
+        {
+            if (Path.GetFileName(jsonPath).StartsWith("folder_")) continue;
+            try
+            {
+                string raw = File.ReadAllText(jsonPath);
+                var meta = JsonSerializer.Deserialize<CacheMetadata>(raw, jsonOptions);
+                if (meta != null)
+                {
+                    string hash = Path.GetFileNameWithoutExtension(jsonPath);
+                    hashToMeta[hash] = meta;
+                }
+            }
+            catch { }
+        }
+
+        // Step 2: for each .dat file, look up its metadata and place in folder structure
+        var usedNames = new HashSet<string>();
+        foreach (var datPath in Directory.GetFiles(dir, "*.dat"))
+        {
+            string hash = Path.GetFileNameWithoutExtension(datPath);
+            if (!hashToMeta.TryGetValue(hash, out var meta)) continue;
+            if (string.IsNullOrEmpty(meta.RelativePath)) continue;
+
+            // Build export path from relativePath
+            string rp = meta.RelativePath.Replace('\\', '/');
+            int lastSlash = rp.LastIndexOf('/');
+            string folder = lastSlash >= 0 ? rp[..lastSlash] : "";
+            string exportPath = string.IsNullOrEmpty(folder) ? meta.FileName : $"{folder}/{meta.FileName}";
+
+            // Handle duplicates
+            string orig = exportPath;
+            int dup = 1;
+            while (!usedNames.Add(exportPath))
+            {
+                string baseName = Path.GetFileNameWithoutExtension(orig);
+                string ext = Path.GetExtension(orig);
+                string parent = Path.GetDirectoryName(orig)?.Replace('\\', '/') ?? "";
+                exportPath = string.IsNullOrEmpty(parent) ? $"{baseName}_{dup}{ext}" : $"{parent}/{baseName}_{dup}{ext}";
+                dup++;
+            }
+
+            var entry = zip.CreateEntry(exportPath, System.IO.Compression.CompressionLevel.Fastest);
+            using var fs = File.OpenRead(datPath);
+            using var es = entry.Open();
+            fs.CopyTo(es);
+        }
+    }
+    return ms.ToArray();
+}

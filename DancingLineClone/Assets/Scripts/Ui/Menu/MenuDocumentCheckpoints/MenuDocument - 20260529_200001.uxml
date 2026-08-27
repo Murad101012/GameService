@@ -1,0 +1,36 @@
+<ui:UXML xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ui="UnityEngine.UIElements" noNamespaceSchemaLocation="../../../../UIElementsSchema/UIElements.xsd" editor-extension-mode="False">
+    <Style src="project://database/Assets/Scripts/Ui/Menu/MenuStyle.uss?fileID=7433441132597879392&amp;guid=7fc032f73f7f76c7da3d46b9137e4bff&amp;type=3#MenuStyle"/>
+    <ui:VisualElement name="Screen_Menu" class="screen-root">
+        <ui:VisualElement name="Black_Screen" picking-mode="Ignore" style="flex-grow: 1; flex-shrink: 0; position: absolute; right: 0; bottom: 0; left: 0; top: 0; opacity: 0.7; background-color: rgb(0, 0, 0);"/>
+        <ui:Label name="Lbl_DebugText" text="DEBUG" style="position: absolute; right: 0; top: 0; font-size: 70px; -unity-font-style: bold; display: none;"/>
+        <ui:Label name="Lbl_LevelTitle" text="LEVEL NAME" class="lbl-level-title"/>
+        <ui:VisualElement name="Spc_Top" class="u-flex-spacer"/>
+        <ui:VisualElement name="Cont_DragZone" class="cont-carousel-viewport">
+            <ui:VisualElement name="Cont_Carousel" class="cont-carousel-film-level-viewport">
+
+                <ui:VisualElement name="LevelCreateTemplate" class="btn-level" >
+                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url('project://database/Assets/Scenes/Piano/Image/preview.png');" />
+                </ui:VisualElement>
+
+                <ui:VisualElement name="Neon Rose" class="btn-level" >
+                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url('project://database/Assets/Scenes/NeonRose/Image/OIP.png');" />
+                </ui:VisualElement>
+
+                <ui:VisualElement name="Piano" class="btn-level" >
+                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url('project://database/Assets/Scenes/Piano/Image/preview.png');" />
+                </ui:VisualElement>
+
+                <ui:VisualElement name="Neon Rose" class="btn-level" >
+                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url('project://database/Assets/Scenes/NeonRose/Image/OIP.png');" />
+                </ui:VisualElement>
+
+                <ui:VisualElement name="Piano" class="btn-level" >
+                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url('project://database/Assets/Scenes/Piano/Image/preview.png');" />
+                </ui:VisualElement>
+
+</ui:VisualElement >
+        </ui:VisualElement>
+        <ui:VisualElement name="Spc_Top" class="u-flex-spacer"/>
+        <ui:Slider value="0" high-value="-1" name="Slider_Carousel" fill="false" style="width: 80%; justify-content: center; align-self: center; align-content: flex-start;"/>
+    </ui:VisualElement>
+</ui:UXML>
