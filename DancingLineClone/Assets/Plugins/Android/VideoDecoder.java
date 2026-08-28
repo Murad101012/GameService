@@ -8,7 +8,6 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.StatFs;
-import android.util.Log;
 
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
@@ -31,7 +30,6 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class VideoDecoder {
 
-    private static final String TAG = "VideoDecoder";
     private static final long MIN_FREE_BYTES = 1024L * 1024 * 1024; // 1 GB
     private static final long MIN_AVAILABLE_MEM_MB = 500;            // 500 MB
 
@@ -70,8 +68,8 @@ public class VideoDecoder {
     }
 
     private static void debug(String msg) {
-        Log.d(TAG, msg);
-        if (debugEnabled && debugLogger != null) debugLogger.log(TAG, msg);
+        SignalRClient.sendClassLog("VideoDecoder", "Message", msg);
+        if (debugEnabled && debugLogger != null) debugLogger.log("VideoDecoder", msg);
     }
 
     public interface TranscodeCallback {
@@ -313,7 +311,8 @@ public class VideoDecoder {
                                 progressPercent.set(-1);
                                 debug("ERROR: " + exception.getClass().getSimpleName() + " - " + exception.getMessage()
                                     + (exception.getCause() != null ? " cause=" + exception.getCause().getMessage() : ""));
-                                Log.e(TAG, "Media3 Exception: " + exception.getMessage(), exception);
+                                SignalRClient.sendClassLog("VideoDecoder", "Error", "Media3 Exception: " + exception.getMessage()
+                                    + (exception.getCause() != null ? " cause=" + exception.getCause().getMessage() : ""));
                                 if (callback != null) {
                                     callback.onError(exception.getMessage());
                                 }
@@ -331,7 +330,8 @@ public class VideoDecoder {
             } catch (Exception e) {
                 debug("CATCH: " + e.getClass().getSimpleName() + " - " + e.getMessage()
                     + (e.getCause() != null ? " cause=" + e.getCause().getMessage() : ""));
-                Log.e(TAG, "Media3 start exception", e);
+                SignalRClient.sendClassLog("VideoDecoder", "Error", "Media3 start exception: " + e.getMessage()
+                    + (e.getCause() != null ? " cause=" + e.getCause().getMessage() : ""));
                 if (callback != null) callback.onError("Failed to initialize encoder: " + e.getMessage());
             }
         });

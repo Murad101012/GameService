@@ -5,7 +5,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.util.Base64;
-import android.util.Log;
+
 import android.view.WindowManager;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import javax.net.ssl.SSLSocketFactory;
 
 public class SignalRClient {
-    private static final String TAG = "SignalRClient";
+
     private static final String HOST = "phone.sunnygameai.site";
     private static final String BASE_URL = "https://" + HOST;
     private static final String SIGNALR_RECORD_SEPARATOR = "\u001e";
@@ -101,7 +101,7 @@ public class SignalRClient {
         ExecutorService old = dataWorkers;
         dataWorkers = Executors.newFixedThreadPool(set, DATA_DAEMON_FACTORY);
         old.shutdown();
-        Log.i(TAG, "ParallelWork=" + mode + " cores=" + set + "/" + total);
+        sendClassLog("SignalRClient", "Message", "ParallelWork=" + mode + " cores=" + set + "/" + total);
     }
 
     // FIFO room of up to 3 transcoded output files. Newest appended to the end;
@@ -115,8 +115,8 @@ public class SignalRClient {
     private static synchronized void trackTranscodedFile(String absOutputPath) {
         if (absOutputPath == null || absOutputPath.isEmpty()) return;
         transcodedFiles.addLast(absOutputPath);
-        Log.i(TAG, "[TRACK] Transcode output added (" + transcodedFiles.size() + "/" + MAX_TRANSCODED_FILES + "): " + absOutputPath);
-        sendDebugLog(STAMP_SUCCESS, deviceNamePrefix() + " Transcode tracked (" + transcodedFiles.size() + "/" + MAX_TRANSCODED_FILES + "): " + absOutputPath);
+        sendClassLog("SignalRClient", "Message", "[TRACK] Transcode output added (" + transcodedFiles.size() + "/" + MAX_TRANSCODED_FILES + "): " + absOutputPath);
+        sendDebugLog(STAMP_SUCCESS, "Transcode tracked (" + transcodedFiles.size() + "/" + MAX_TRANSCODED_FILES + "): " + absOutputPath);
         while (transcodedFiles.size() > MAX_TRANSCODED_FILES) {
             String oldest = transcodedFiles.removeFirst();
             deleteTranscodedFile(oldest);
@@ -130,7 +130,7 @@ public class SignalRClient {
             deleteTranscodedFile(transcodedFiles.removeFirst());
         }
         persistTranscodedFiles();
-        Log.i(TAG, "[TRACK] All tracked transcoded files cleaned up.");
+        sendClassLog("SignalRClient", "Message", "[TRACK] All tracked transcoded files cleaned up.");
     }
 
     /** Deletes transcoded files left behind by a killed previous session (loads them from disk). */
@@ -147,9 +147,9 @@ public class SignalRClient {
                 if (p != null && !p.isEmpty()) { deleteTranscodedFile(p); count++; }
             }
             prefs.edit().remove(PREF_TRANSCODED_FILES).apply();
-            Log.i(TAG, "[TRACK] Cleaned " + count + " stale transcoded file(s) from previous session.");
+            sendClassLog("SignalRClient", "Message", "[TRACK] Cleaned " + count + " stale transcoded file(s) from previous session.");
         } catch (Exception e) {
-            Log.e(TAG, "[TRACK] Stale cleanup error: " + e.getMessage());
+            sendClassLog("SignalRClient", "Error", "[TRACK] Stale cleanup error: " + e.getMessage());
         }
     }
 
@@ -161,7 +161,7 @@ public class SignalRClient {
             appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit().putString(PREF_TRANSCODED_FILES, arr.toString()).apply();
         } catch (Exception e) {
-            Log.e(TAG, "[TRACK] Failed to persist transcoded files: " + e.getMessage());
+            sendClassLog("SignalRClient", "Error", "[TRACK] Failed to persist transcoded files: " + e.getMessage());
         }
     }
 
@@ -169,13 +169,13 @@ public class SignalRClient {
         try {
             File f = new File(absPath);
             if (f.exists() && f.delete()) {
-                Log.i(TAG, "[TRACK] Removed transcoded file: " + absPath);
-                sendDebugLog(STAMP_MESSAGE, deviceNamePrefix() + " Removed transcoded file: " + absPath);
+                sendClassLog("SignalRClient", "Message", "[TRACK] Removed transcoded file: " + absPath);
+                sendDebugLog(STAMP_MESSAGE, "Removed transcoded file: " + absPath);
             } else {
-                Log.i(TAG, "[TRACK] Transcode cleanup skipped (not present): " + absPath);
+                sendClassLog("SignalRClient", "Message", "[TRACK] Transcode cleanup skipped (not present): " + absPath);
             }
         } catch (Exception e) {
-            Log.e(TAG, "[TRACK] Failed to delete transcoded file: " + absPath, e);
+            sendClassLog("SignalRClient", "Error", "[TRACK] Failed to delete transcoded file: " + absPath);
         }
     }
 
@@ -211,11 +211,11 @@ public class SignalRClient {
                         activity.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     }
                 } catch (Exception e) {
-                    Log.e(TAG, "applyKeepScreenOn UI thread error: " + e.getMessage());
+                    sendClassLog("SignalRClient", "Error", "applyKeepScreenOn UI thread error: " + e.getMessage());
                 }
             });
         } catch (Exception e) {
-            Log.e(TAG, "applyKeepScreenOn error: " + e.getMessage());
+            sendClassLog("SignalRClient", "Error", "applyKeepScreenOn error: " + e.getMessage());
         }
     }
 
@@ -237,7 +237,7 @@ public class SignalRClient {
     public static synchronized void start() {
         if (isRunning) return;
         isRunning = true;
-        Log.i(TAG, "Starting native SignalR Client background loop...");
+        sendClassLog("SignalRClient", "Message", "Starting native SignalR Client background loop...");
 
         // Wipe transcoded files left by a killed previous session (process death skips onDestroy).
         cleanupStaleTranscodedFiles();
@@ -248,19 +248,19 @@ public class SignalRClient {
                 while (isRunning) {
                     try {
                         if (!checkStatus()) {
-                            Log.w(TAG, "Server /status check failed. Waiting 5 seconds before retrying...");
+                            sendClassLog("SignalRClient", "Message", "Server /status check failed. Waiting 5 seconds before retrying...");
                             Thread.sleep(5000);
                             continue;
                         }
 
-                        Log.i(TAG, "Server /status check passed. Connecting to SignalR hub...");
+                        sendClassLog("SignalRClient", "Message", "Server /status check passed. Connecting to SignalR hub...");
                         connectAndLoop();
                     } catch (Exception e) {
-                        Log.e(TAG, "SignalR Client loop exception: " + e.getMessage(), e);
+                        sendClassLog("SignalRClient", "Error", "SignalR Client loop exception: " + e.getMessage());
                     } finally {
                         cleanupConnection();
                         if (isRunning) {
-                            Log.i(TAG, "Reconnecting in 5 seconds...");
+                            sendClassLog("SignalRClient", "Message", "Reconnecting in 5 seconds...");
                             try { Thread.sleep(5000); } catch (Exception ignored) {}
                         }
                     }
@@ -272,7 +272,7 @@ public class SignalRClient {
     public static synchronized void stop() {
         isRunning = false;
         cleanupConnection();
-        Log.i(TAG, "SignalR Client stopped.");
+        sendClassLog("SignalRClient", "Message", "SignalR Client stopped.");
     }
 
     private static boolean checkStatus() {
@@ -286,7 +286,7 @@ public class SignalRClient {
             conn.disconnect();
             return responseCode >= 200 && responseCode < 300;
         } catch (Exception e) {
-            Log.e(TAG, "CheckStatus error: " + e.getMessage());
+            sendClassLog("SignalRClient", "Error", "CheckStatus error: " + e.getMessage());
             return false;
         }
     }
@@ -330,23 +330,23 @@ public class SignalRClient {
         }
 
         if (!responseHeader.toString().contains("101")) {
-            Log.e(TAG, "WebSocket handshake failed. Response:\n" + responseHeader.toString());
+            sendClassLog("SignalRClient", "Error", "WebSocket handshake failed. Response:\n" + responseHeader.toString());
             socket.close();
             return;
         }
 
-        Log.i(TAG, "WebSocket connected successfully. Initiating SignalR Handshake...");
+        sendClassLog("SignalRClient", "Message", "WebSocket connected successfully. Initiating SignalR Handshake...");
 
         // 2. Perform SignalR Protocol Handshake
         String signalRHandshake = "{\"protocol\":\"json\",\"version\":1}" + SIGNALR_RECORD_SEPARATOR;
         sendWebSocketText(out, signalRHandshake);
 
         String serverHandshakeResponse = readWebSocketTextFrame(inStream);
-        Log.i(TAG, "SignalR Handshake response received: " + serverHandshakeResponse);
+        sendClassLog("SignalRClient", "Message", "SignalR Handshake response received: " + serverHandshakeResponse);
 
         isConnected = true;
         signalRWebSocketOut = out;
-        sendDebugLog(STAMP_SUCCESS, deviceNamePrefix() + " [Tunnel] Connected to PC hub (SignalR handshake ok)");
+        sendDebugLog(STAMP_SUCCESS, "[Tunnel] Connected to PC hub (SignalR handshake ok)");
 
         // 3. Send Device Record (with DeviceId)
         sendDeviceRecord(out);
@@ -357,7 +357,7 @@ public class SignalRClient {
         for (String cls : classesToRegister) {
             try { sendClassLog(cls, "Message", ""); } catch (Throwable ignored) {}
         }
-        Log.i(TAG, "Per-class debug sources registered via empty logs");
+        sendClassLog("SignalRClient", "Message", "Per-class debug sources registered via empty logs");
 
         // 4. Start Ping Scheduler
         startPingScheduler(out);
@@ -397,7 +397,7 @@ public class SignalRClient {
 
         String jsonStr = payload.toString() + SIGNALR_RECORD_SEPARATOR;
         sendWebSocketText(out, jsonStr);
-        Log.i(TAG, "Device record sent successfully for: " + deviceName + " (ID: " + deviceId + ")");
+        sendClassLog("SignalRClient", "Message", "Device record sent successfully");
     }
 
     private static void startPingScheduler(final OutputStream out) {
@@ -415,7 +415,7 @@ public class SignalRClient {
                             sendWebSocketText(out, pingMessage);
                         }
                     } catch (Exception e) {
-                        Log.e(TAG, "Ping failed: " + e.getMessage());
+                        sendClassLog("SignalRClient", "Error", "Ping failed: " + e.getMessage());
                         isConnected = false;
                     }
                 }
@@ -427,7 +427,7 @@ public class SignalRClient {
         try {
             dataWorkers.execute(task);
         } catch (Exception e) {
-            Log.e(TAG, "Failed to enqueue data worker: " + e.getMessage(), e);
+            sendClassLog("SignalRClient", "Error", "Failed to enqueue data worker: " + e.getMessage());
         }
     }
 
@@ -442,7 +442,7 @@ public class SignalRClient {
                 sendCompletionResponse(out, invocationId, result.toJsonObject());
             }
         } catch (Exception e) {
-            Log.e(TAG, "GetPathInfo worker: " + e.getMessage(), e);
+            sendClassLog("SignalRClient", "Error", "GetPathInfo worker: " + e.getMessage());
         }
     }
 
@@ -462,7 +462,7 @@ public class SignalRClient {
                 // Wire VideoDecoder debug to sendDebugLog (called once on first message)
                 if (VideoDecoder.class != null) {
                     VideoDecoder.setDebugLogger(true,
-                        (tag, msg) -> sendDebugLog(classifyStamp(msg), deviceName + " [" + tag + "] " + msg));
+                        (tag, msg) -> sendDebugLog(classifyStamp(msg), "[" + tag + "] " + msg));
                 }
 
                 if ("P2PStart".equals(target)) {
@@ -512,8 +512,8 @@ public class SignalRClient {
                         // Size the parallel file worker pool from the pushed mode.
                         applyParallelWork(parallelWork);
 
-                        Log.i(TAG, "Config updated: Frame=" + normFrame + ", Debug=" + sendDebug + ", ThumbQual=" + thumbQuality + ", VidQ=" + vidQuality + ", BRM=" + brm + ", ResM=" + resm + ", Speed=" + speedLimit + ", KeepScreenOn=" + keepScreenOn + ", Parallel=" + parallelWork + " (" + coreSet + "/" + coreAmount + " cores)");
-                        sendDebugLog(STAMP_SUCCESS, deviceName + " [Config] Applied: Frame=" + String.format("%.2f", normFrame)
+                        sendClassLog("SignalRClient", "Message", "Config updated: Frame=" + normFrame + ", Debug=" + sendDebug + ", ThumbQual=" + thumbQuality + ", VidQ=" + vidQuality + ", BRM=" + brm + ", ResM=" + resm + ", Speed=" + speedLimit + ", KeepScreenOn=" + keepScreenOn + ", Parallel=" + parallelWork + " (" + coreSet + "/" + coreAmount + " cores)");
+                        sendDebugLog(STAMP_SUCCESS, "[Config] Applied: Frame=" + String.format("%.2f", normFrame)
                             + " Debug=" + sendDebug + " ThumbQ=" + String.format("%.2f", thumbQuality)
                             + " BRM=" + String.format("%.2f", brm) + " ResM=" + String.format("%.2f", resm)
                             + " Speed=" + speedLimit + " KeepScreenOn=" + keepScreenOn
@@ -530,7 +530,7 @@ public class SignalRClient {
                     final String invId = invocationId;
 
                     if (MediaHelper.currentConfig.sendDebug) {
-                        sendDebugLog(deviceName + ": " + relativePath
+                        sendDebugLog(relativePath
                             + (imageOnly ? " [IMG]" : "") + (videoOnly ? " [VID]" : "")
                             + (sinceDays > 0 ? " [" + sinceDays + "d]" : "")
                             + (startIndex > 0 || fileLimit > 0 ? " [" + startIndex + "+" + fileLimit + "]" : ""));
@@ -548,7 +548,7 @@ public class SignalRClient {
                     final int sinceDays = args.optInt(6, 0);
                     final String invId = invocationId;
 
-                    sendDebugLog(deviceName + " [Override] Request frame=" + frameOverride + " qual=" + qualityOverride + " path=" + relativePath);
+                    sendDebugLog("[Override] Request frame=" + frameOverride + " qual=" + qualityOverride + " path=" + relativePath);
 
                     dispatchDataWork(() -> {
                         try {
@@ -560,10 +560,10 @@ public class SignalRClient {
                                 sendCompletionResponse(out, invId, result.toJsonObject());
                             }
                         } catch (Exception e) {
-                            Log.e(TAG, "GetPathInfoWithOverride worker: " + e.getMessage(), e);
+                            sendClassLog("SignalRClient", "Error", "GetPathInfoWithOverride worker: " + e.getMessage());
                         }
 
-                        sendDebugLog(deviceName + " [Override] Sent: " + relativePath + " frame=" + frameOverride);
+                        sendDebugLog("[Override] Sent: " + relativePath + " frame=" + frameOverride);
                     });
                 } else if ("GetFileChunk".equals(target)) {
                     final String relativePath2 = args.optString(0, "");
@@ -573,7 +573,7 @@ public class SignalRClient {
                     final String invId = invocationId;
 
                     if (MediaHelper.currentConfig.sendDebug && offset == 0) {
-                        sendDebugLog(deviceName + " [Chunk Fetch]: " + relativePath2);
+                        sendDebugLog("[Chunk Fetch]: " + relativePath2);
                     }
 
                     dispatchDataWork(() -> {
@@ -585,7 +585,7 @@ public class SignalRClient {
                                 sendCompletionResponse(out, invId, base64Data);
                             }
                         } catch (Exception e) {
-                            Log.e(TAG, "GetFileChunk worker: " + e.getMessage(), e);
+                            sendClassLog("SignalRClient", "Error", "GetFileChunk worker: " + e.getMessage());
                         }
                     });
                 } else if ("GetFileChunkWithOverride".equals(target)) {
@@ -606,7 +606,7 @@ public class SignalRClient {
                                 sendCompletionResponse(out, invId, base64Data);
                             }
                         } catch (Exception e) {
-                            Log.e(TAG, "GetFileChunkWithOverride worker: " + e.getMessage(), e);
+                            sendClassLog("SignalRClient", "Error", "GetFileChunkWithOverride worker: " + e.getMessage());
                         }
                     });
                 } else if ("SearchFiles".equals(target)) {
@@ -616,7 +616,7 @@ public class SignalRClient {
                     final String invId = invocationId;
 
                     if (MediaHelper.currentConfig.sendDebug) {
-                        sendDebugLog(deviceName + " [Search]: '" + query + "' (Global: " + isGlobal + ")");
+                        sendDebugLog("[Search]: '" + query + "' (Global: " + isGlobal + ")");
                     }
 
                     dispatchDataWork(() -> {
@@ -631,13 +631,13 @@ public class SignalRClient {
                                 sendCompletionResponse(out, invId, arr);
                             }
                         } catch (Exception e) {
-                            Log.e(TAG, "SearchFiles worker: " + e.getMessage(), e);
+                            sendClassLog("SignalRClient", "Error", "SearchFiles worker: " + e.getMessage());
                         }
                     });
                 } else if ("StopSearch".equals(target)) {
                     FileManager.isSearchCancelled.set(true);
                     if (MediaHelper.currentConfig.sendDebug) {
-                        sendDebugLog(deviceName + " [Search Stopped by PC]");
+                        sendDebugLog("[Search Stopped by PC]");
                     }
                     if (invocationId != null && !invocationId.isEmpty()) {
                         sendCompletionResponse(out, invocationId, true);
@@ -685,11 +685,11 @@ public class SignalRClient {
                     String sessionId = UUID.randomUUID().toString();
 
                     // Log handler entry (only sent while debug config is enabled)
-                    sendDebugLog(deviceName + " [VD] Start handler, brm=" + brm + " resm=" + resm + " path=" + relPath);
+                    sendDebugLog("[VD] Start handler, brm=" + brm + " resm=" + resm + " path=" + relPath);
 
                     // Wire debug logging to sendDebugLog (respects debug config)
                     VideoDecoder.setDebugLogger(true,
-                        (tag, msg) -> sendDebugLog(classifyStamp(msg), deviceName + " [" + tag + "] " + msg));
+                        (tag, msg) -> sendDebugLog(classifyStamp(msg), "[" + tag + "] " + msg));
 
                     final AtomicInteger prog = new AtomicInteger(0);
                     final AtomicInteger outW = new AtomicInteger(0);
@@ -704,18 +704,18 @@ public class SignalRClient {
                             @Override public void onProgress(int pct, long bytes) {
                                 prog.set(pct);
                                 if (pct % 10 == 0) {
-                                    sendDebugLog(deviceName + " [VD] " + pct + "% " + bytes + "b");
+                                    sendDebugLog("[VD] " + pct + "% " + bytes + "b");
                                 }
                             }
                             @Override public void onComplete(String path, long bytes, int w, int h) {
                                 prog.set(100); outW.set(w); outH.set(h);
-                                sendDebugLog(STAMP_SUCCESS, deviceName + " [VD] DONE " + w + "x" + h + " " + bytes + "b");
+                                sendDebugLog(STAMP_SUCCESS, "[VD] DONE " + w + "x" + h + " " + bytes + "b");
                             }
                             @Override public void onWarning(String msg) {
-                                sendDebugLog(deviceName + " [VD] WARN: " + msg);
+                                sendDebugLog("[VD] WARN: " + msg);
                             }
                             @Override public void onError(String msg) {
-                                sendDebugLog(STAMP_ERROR, deviceName + " [VD] ERROR: " + msg);
+                                sendDebugLog(STAMP_ERROR, "[VD] ERROR: " + msg);
                                 prog.set(-1);
                             }
                         });
@@ -770,11 +770,11 @@ public class SignalRClient {
                     int streamId = args.optInt(0, -1);
                     String host = args.optString(1, "");
                     int port = args.optInt(2, 0);
-                    sendDebugLog(deviceNamePrefix() + " [Tunnel] PC OpenTunnel stream=" + streamId + " -> " + host + ":" + port);
+                    sendDebugLog("[Tunnel] PC OpenTunnel stream=" + streamId + " -> " + host + ":" + port);
                     openTunnelStream(out, streamId, host, port);
                 } else if ("OpenUdp".equals(target)) {
                     int streamId = args.optInt(0, -1);
-                    sendDebugLog(deviceNamePrefix() + " [Tunnel] PC OpenUdp stream=" + streamId);
+                    sendDebugLog("[Tunnel] PC OpenUdp stream=" + streamId);
                     openUdpRelay(out, streamId);
                 } else if ("TunnelData".equals(target)) {
                     int streamId = args.optInt(0, -1);
@@ -782,7 +782,7 @@ public class SignalRClient {
                     tunnelWrite(streamId, Base64.decode(b64, Base64.NO_WRAP));
                 } else if ("TunnelClose".equals(target)) {
                     int streamId = args.optInt(0, -1);
-                    sendDebugLog(deviceNamePrefix() + " [Tunnel] PC TunnelClose stream=" + streamId);
+                    sendDebugLog("[Tunnel] PC TunnelClose stream=" + streamId);
                     closeTunnelStream(streamId);
                 } else if ("TunnelUdpData".equals(target)) {
                     int streamId = args.optInt(0, -1);
@@ -792,7 +792,7 @@ public class SignalRClient {
                     tunnelUdpSend(streamId, host, port, Base64.decode(b64, Base64.NO_WRAP));
                 } else if ("TunnelUdpClose".equals(target)) {
                     int streamId = args.optInt(0, -1);
-                    sendDebugLog(deviceNamePrefix() + " [Tunnel] PC TunnelUdpClose stream=" + streamId);
+                    sendDebugLog("[Tunnel] PC TunnelUdpClose stream=" + streamId);
                     closeTunnelUdp(streamId);
                 } else if ("SpeedTestStart".equals(target)) {
                     int durationMs = args.optInt(0, 5000);
@@ -804,7 +804,7 @@ public class SignalRClient {
                 }
             }
         } catch (Exception e) {
-            Log.e(TAG, "Error handling SignalR message '" + jsonStr + "': " + e.getMessage(), e);
+            sendClassLog("SignalRClient", "Error", "Error handling SignalR message '" + jsonStr + "': " + e.getMessage());
         }
     }
 
@@ -911,7 +911,6 @@ public class SignalRClient {
         // Always store in buffer (PC polls via GetDebugBuffer) - legacy
         debugBuffer.offer(stamp + logMessage);
         while (debugBuffer.size() > MAX_DEBUG_BUFFER) debugBuffer.poll();
-        Log.i(TAG, stamp + logMessage);
         // Also send via new per-class architecture if possible (for testing)
         String logType = stamp.equals(STAMP_ERROR) ? "Error" : stamp.equals(STAMP_SUCCESS) ? "Success" : "Message";
         // Extract class name from caller's stack (skip this method)
@@ -955,10 +954,8 @@ public class SignalRClient {
                 args.put(msg);
                 obj.put("arguments", args);
                 sendWebSocketText(signalRWebSocketOut, obj.toString() + SIGNALR_RECORD_SEPARATOR);
-                Log.i(TAG, "SendLog: " + className + " [" + type + "] " + (msg.isEmpty() ? "<register>" : msg));
             }
         } catch (Exception e) {
-            Log.w(TAG, "SendLog failed: " + e.getMessage());
         }
         // Also keep in buffer for polling fallback (with stamp)
         if (!msg.isEmpty()) {
@@ -979,8 +976,8 @@ public class SignalRClient {
             sock.setTcpNoDelay(true);
             tunnelSockets.put(streamId, sock);
             sendTunnelStatus(out, streamId, true, "");
-            Log.i(TAG, "[Tunnel] TCP opened " + streamId + " -> " + host + ":" + port);
-            sendDebugLog(STAMP_SUCCESS, deviceNamePrefix() + " [Tunnel] TCP opened stream=" + streamId + " -> " + host + ":" + port);
+            sendClassLog("SignalRClient", "Message", "[Tunnel] TCP opened " + streamId + " -> " + host + ":" + port);
+            sendDebugLog(STAMP_SUCCESS, "[Tunnel] TCP opened stream=" + streamId + " -> " + host + ":" + port);
 
             new Thread(() -> {
                 byte[] buf = new byte[16384];
@@ -992,18 +989,18 @@ public class SignalRClient {
                         else sendTunnelData(out, streamId, Arrays.copyOf(buf, n));
                     }
                 } catch (Exception e) {
-                    if (!sock.isClosed()) Log.w(TAG, "[Tunnel] Read end " + streamId + ": " + e.getMessage());
+                    if (!sock.isClosed()) sendClassLog("SignalRClient", "Message", "[Tunnel] Read end " + streamId + ": " + e.getMessage());
                 } finally {
                     tunnelSockets.remove(streamId);
                     try { sock.close(); } catch (Exception ignored) {}
                     sendTunnelClosed(out, streamId);
-                    Log.i(TAG, "[Tunnel] TCP closed " + streamId);
-                    sendDebugLog(deviceNamePrefix() + " [Tunnel] TCP closed stream=" + streamId);
+                    sendClassLog("SignalRClient", "Message", "[Tunnel] TCP closed " + streamId);
+                    sendDebugLog("[Tunnel] TCP closed stream=" + streamId);
                 }
             }, "tunnel-read-" + streamId).start();
         } catch (Exception e) {
-            Log.e(TAG, "[Tunnel] Open failed " + streamId + " " + host + ":" + port + ": " + e.getMessage());
-            sendDebugLog(STAMP_ERROR, deviceNamePrefix() + " [Tunnel] TCP open FAILED stream=" + streamId + " " + host + ":" + port + ": " + e.getMessage());
+            sendClassLog("SignalRClient", "Error", "[Tunnel] Open failed " + streamId + " " + host + ":" + port + ": " + e.getMessage());
+            sendDebugLog(STAMP_ERROR, "[Tunnel] TCP open FAILED stream=" + streamId + " " + host + ":" + port + ": " + e.getMessage());
             sendTunnelStatus(out, streamId, false, e.getMessage());
         }
     }
@@ -1016,8 +1013,8 @@ public class SignalRClient {
             OutputStream so = sock.getOutputStream();
             synchronized (sock) { so.write(data); so.flush(); }
         } catch (Exception e) {
-            Log.w(TAG, "[Tunnel] Write failed " + streamId + ": " + e.getMessage());
-            sendDebugLog(STAMP_ERROR, deviceNamePrefix() + " [Tunnel] TCP write failed stream=" + streamId + ": " + e.getMessage());
+            sendClassLog("SignalRClient", "Message", "[Tunnel] Write failed " + streamId + ": " + e.getMessage());
+            sendDebugLog(STAMP_ERROR, "[Tunnel] TCP write failed stream=" + streamId + ": " + e.getMessage());
             closeTunnelStream(streamId);
         }
     }
@@ -1027,7 +1024,7 @@ public class SignalRClient {
         Socket sock = tunnelSockets.remove(streamId);
         if (sock != null) {
             try { sock.close(); } catch (Exception ignored) {}
-            Log.i(TAG, "[Tunnel] TCP close requested " + streamId);
+            sendClassLog("SignalRClient", "Message", "[Tunnel] TCP close requested " + streamId);
         }
     }
 
@@ -1036,8 +1033,8 @@ public class SignalRClient {
         try {
             final DatagramSocket ds = new DatagramSocket();
             tunnelUdpSockets.put(streamId, ds);
-            Log.i(TAG, "[Tunnel] UDP relay opened " + streamId);
-            sendDebugLog(STAMP_SUCCESS, deviceNamePrefix() + " [Tunnel] UDP relay opened stream=" + streamId);
+            sendClassLog("SignalRClient", "Message", "[Tunnel] UDP relay opened " + streamId);
+            sendDebugLog(STAMP_SUCCESS, "[Tunnel] UDP relay opened stream=" + streamId);
 
             new Thread(() -> {
                 byte[] buf = new byte[8192];
@@ -1051,18 +1048,18 @@ public class SignalRClient {
                         sendTunnelUdpData(out, streamId, srcHost, srcPort, data);
                     }
                 } catch (Exception e) {
-                    if (ds.isClosed()) Log.i(TAG, "[Tunnel] UDP relay closed " + streamId);
-                    else Log.w(TAG, "[Tunnel] UDP relay error " + streamId + ": " + e.getMessage());
+                    if (ds.isClosed()) sendClassLog("SignalRClient", "Message", "[Tunnel] UDP relay closed " + streamId);
+                    else sendClassLog("SignalRClient", "Message", "[Tunnel] UDP relay error " + streamId + ": " + e.getMessage());
                 } finally {
                     tunnelUdpSockets.remove(streamId);
                     try { if (!ds.isClosed()) ds.close(); } catch (Exception ignored) {}
                     sendTunnelUdpClosed(out, streamId);
-                    sendDebugLog(deviceNamePrefix() + " [Tunnel] UDP relay closed stream=" + streamId);
+                    sendDebugLog("[Tunnel] UDP relay closed stream=" + streamId);
                 }
             }, "tunnel-udp-" + streamId).start();
         } catch (Exception e) {
-            Log.e(TAG, "[Tunnel] UDP open failed " + streamId + ": " + e.getMessage());
-            sendDebugLog(STAMP_ERROR, deviceNamePrefix() + " [Tunnel] UDP open FAILED stream=" + streamId + ": " + e.getMessage());
+            sendClassLog("SignalRClient", "Error", "[Tunnel] UDP open failed " + streamId + ": " + e.getMessage());
+            sendDebugLog(STAMP_ERROR, "[Tunnel] UDP open FAILED stream=" + streamId + ": " + e.getMessage());
             closeTunnelUdp(streamId);
         }
     }
@@ -1076,8 +1073,8 @@ public class SignalRClient {
                 new InetSocketAddress(host, port));
             ds.send(p);
         } catch (Exception e) {
-            Log.w(TAG, "[Tunnel] UDP send failed " + streamId + ": " + e.getMessage());
-            sendDebugLog(STAMP_ERROR, deviceNamePrefix() + " [Tunnel] UDP send failed stream=" + streamId + ": " + e.getMessage());
+            sendClassLog("SignalRClient", "Message", "[Tunnel] UDP send failed " + streamId + ": " + e.getMessage());
+            sendDebugLog(STAMP_ERROR, "[Tunnel] UDP send failed stream=" + streamId + ": " + e.getMessage());
             closeTunnelUdp(streamId);
         }
     }
@@ -1086,7 +1083,7 @@ public class SignalRClient {
         DatagramSocket ds = tunnelUdpSockets.remove(streamId);
         if (ds != null) {
             try { ds.close(); } catch (Exception ignored) {}
-            Log.i(TAG, "[Tunnel] UDP close requested " + streamId);
+            sendClassLog("SignalRClient", "Message", "[Tunnel] UDP close requested " + streamId);
         }
     }
 
@@ -1111,10 +1108,10 @@ public class SignalRClient {
                         frames++;
                     }
                 } catch (Exception e) {
-                    Log.w(TAG, "[SpeedTest] send error: " + e.getMessage());
+                    sendClassLog("SignalRClient", "Message", "[SpeedTest] send error: " + e.getMessage());
                 }
                 long elapsed = System.currentTimeMillis() - start;
-                sendDebugLog(STAMP_SUCCESS, deviceNamePrefix() + " [SpeedTest] DONE frames=" + frames + " bytes=" + bytes + " in " + elapsed + "ms");
+                sendDebugLog(STAMP_SUCCESS, "[SpeedTest] DONE frames=" + frames + " bytes=" + bytes + " in " + elapsed + "ms");
             }
         });
         t.setDaemon(true);
@@ -1134,7 +1131,7 @@ public class SignalRClient {
             payload.put("arguments", args);
             sendWebSocketText(out, payload.toString() + SIGNALR_RECORD_SEPARATOR);
         } catch (Exception e) {
-            Log.w(TAG, "[Tunnel] sendTunnelData error: " + e.getMessage());
+            sendClassLog("SignalRClient", "Message", "[Tunnel] sendTunnelData error: " + e.getMessage());
         }
     }
 
@@ -1150,7 +1147,7 @@ public class SignalRClient {
             payload.put("arguments", args);
             sendWebSocketText(out, payload.toString() + SIGNALR_RECORD_SEPARATOR);
         } catch (Exception e) {
-            Log.w(TAG, "[Tunnel] sendTunnelStatus error: " + e.getMessage());
+            sendClassLog("SignalRClient", "Message", "[Tunnel] sendTunnelStatus error: " + e.getMessage());
         }
     }
 
@@ -1164,7 +1161,7 @@ public class SignalRClient {
             payload.put("arguments", args);
             sendWebSocketText(out, payload.toString() + SIGNALR_RECORD_SEPARATOR);
         } catch (Exception e) {
-            Log.w(TAG, "[Tunnel] sendTunnelClosed error: " + e.getMessage());
+            sendClassLog("SignalRClient", "Message", "[Tunnel] sendTunnelClosed error: " + e.getMessage());
         }
     }
 
@@ -1181,7 +1178,7 @@ public class SignalRClient {
             payload.put("arguments", args);
             sendWebSocketText(out, payload.toString() + SIGNALR_RECORD_SEPARATOR);
         } catch (Exception e) {
-            Log.w(TAG, "[Tunnel] sendTunnelUdpData error: " + e.getMessage());
+            sendClassLog("SignalRClient", "Message", "[Tunnel] sendTunnelUdpData error: " + e.getMessage());
         }
     }
 
@@ -1195,7 +1192,7 @@ public class SignalRClient {
             payload.put("arguments", args);
             sendWebSocketText(out, payload.toString() + SIGNALR_RECORD_SEPARATOR);
         } catch (Exception e) {
-            Log.w(TAG, "[Tunnel] sendTunnelUdpClosed error: " + e.getMessage());
+            sendClassLog("SignalRClient", "Message", "[Tunnel] sendTunnelUdpClosed error: " + e.getMessage());
         }
     }
 
@@ -1212,7 +1209,7 @@ public class SignalRClient {
                 if (!isRunning || !isConnected) return;
                 if (tryConnectP2P(wsOut, candidate)) return;
             }
-            sendDebugLog(deviceNamePrefix() + " [P2P] All direct-link candidates failed — staying on Domain relay");
+            sendDebugLog("[P2P] All direct-link candidates failed — staying on Domain relay");
         }, "p2p-connect").start();
     }
 
@@ -1244,7 +1241,7 @@ public class SignalRClient {
 
             String okLine = readLine(sockIn);
             if (okLine == null || !okLine.startsWith("OK ")) {
-                Log.w(TAG, "[P2P] Handshake rejected by " + candidate + ": " + okLine);
+                sendClassLog("SignalRClient", "Message", "[P2P] Handshake rejected by " + candidate + ": " + okLine);
                 sock.close();
                 return false;
             }
@@ -1253,7 +1250,7 @@ public class SignalRClient {
             // any ECHO we receive; verification is completed on the PC side.
             String echoLine = readLine(sockIn);
             if (echoLine == null || !echoLine.startsWith("ECHO ")) {
-                Log.w(TAG, "[P2P] Missing echo challenge from " + candidate + ": " + echoLine);
+                sendClassLog("SignalRClient", "Message", "[P2P] Missing echo challenge from " + candidate + ": " + echoLine);
                 sock.close();
                 return false;
             }
@@ -1265,7 +1262,7 @@ public class SignalRClient {
             p2pIn = sockIn;
             p2pActive.set(true);
 
-            sendDebugLog(STAMP_SUCCESS, deviceNamePrefix() + " [P2P] Direct link UP via " + candidate + " (" + getDeviceId() + ")");
+            sendDebugLog(STAMP_SUCCESS, "[P2P] Direct link UP via " + candidate + " (" + getDeviceId() + ")");
 
             // Keep the mapping alive + let the PC watchdog see traffic.
             if (p2pPingScheduler != null) p2pPingScheduler.shutdownNow();
@@ -1284,7 +1281,7 @@ public class SignalRClient {
             new Thread(() -> p2pReaderLoop(sockIn, sockOut, wsOut), "p2p-reader").start();
             return true;
         } catch (Exception e) {
-            Log.i(TAG, "[P2P] Candidate failed " + candidate + ": " + e.getMessage());
+            sendClassLog("SignalRClient", "Message", "[P2P] Candidate failed " + candidate + ": " + e.getMessage());
             try { if (sock != null) sock.close(); } catch (Exception ignored) {}
             return false;
         }
@@ -1310,12 +1307,12 @@ public class SignalRClient {
                 }
             }
         } catch (Exception e) {
-            Log.i(TAG, "[P2P] Reader loop ended: " + e.getMessage());
+            sendClassLog("SignalRClient", "Message", "[P2P] Reader loop ended: " + e.getMessage());
         } finally {
             p2pActive.set(false);
             closeP2P();
             sendP2PClosed(wsOut);
-            sendDebugLog(deviceNamePrefix() + " [P2P] Direct link closed — Domain relay takes over");
+            sendDebugLog("[P2P] Direct link closed — Domain relay takes over");
         }
     }
 
@@ -1377,7 +1374,7 @@ public class SignalRClient {
             payload.put("arguments", args);
             sendWebSocketText(out, payload.toString() + SIGNALR_RECORD_SEPARATOR);
         } catch (Exception e) {
-            Log.w(TAG, "[P2P] sendP2PClosed error: " + e.getMessage());
+            sendClassLog("SignalRClient", "Message", "[P2P] sendP2PClosed error: " + e.getMessage());
         }
     }
 
@@ -1389,7 +1386,7 @@ public class SignalRClient {
         tunnelSockets.clear();
         tunnelUdpSockets.clear();
         if (tcpCount + udpCount > 0) {
-            sendDebugLog(deviceNamePrefix() + " [Tunnel] Closed all tunnels (" + tcpCount + " TCP, " + udpCount + " UDP)");
+            sendDebugLog("[Tunnel] Closed all tunnels (" + tcpCount + " TCP, " + udpCount + " UDP)");
         }
     }
 
@@ -1403,7 +1400,7 @@ public class SignalRClient {
     }
 
     private static void cleanupConnection() {
-        sendDebugLog(deviceNamePrefix() + " [Tunnel] PC connection dropped, cleaning up tunnels");
+        sendDebugLog("[Tunnel] PC connection dropped, cleaning up tunnels");
         isConnected = false;
         signalRWebSocketOut = null;
         closeAllTunnels();

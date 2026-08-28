@@ -13,10 +13,8 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.os.SystemClock;
-import android.util.Log;
 
 public class GameForegroundService extends Service {
-    private static final String TAG = "GameForegroundService";
     private static final String CHANNEL_ID = "GameForegroundServiceChannel";
     private static final int NOTIFICATION_ID = 9999;
     
@@ -26,7 +24,7 @@ public class GameForegroundService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        Log.i(TAG, "Creating GameForegroundService...");
+        SignalRClient.sendClassLog("GameForegroundService", "Message", "Creating GameForegroundService...");
         createNotificationChannel();
 
         try {
@@ -35,7 +33,7 @@ public class GameForegroundService extends Service {
             if (powerManager != null) {
                 wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GameApp::ForegroundServiceWakeLock");
                 wakeLock.acquire();
-                Log.i(TAG, "Partial WakeLock acquired.");
+                SignalRClient.sendClassLog("GameForegroundService", "Success", "Partial WakeLock acquired.");
             }
 
             // 2. Acquire High-Performance WifiLock so Wi-Fi doesn't sleep during screen-off
@@ -43,16 +41,16 @@ public class GameForegroundService extends Service {
             if (wifiManager != null) {
                 wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "GameApp::ForegroundServiceWifiLock");
                 wifiLock.acquire();
-                Log.i(TAG, "High-Perf WifiLock acquired.");
+                SignalRClient.sendClassLog("GameForegroundService", "Success", "High-Perf WifiLock acquired.");
             }
         } catch (Exception e) {
-            Log.e(TAG, "Failed to acquire Locks: " + e.getMessage(), e);
+            SignalRClient.sendClassLog("GameForegroundService", "Error", "Failed to acquire Locks: " + e.getMessage());
         }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        Log.i(TAG, "Starting GameForegroundService...");
+        SignalRClient.sendClassLog("GameForegroundService", "Message", "Starting GameForegroundService...");
 
         Intent notificationIntent;
         try {
@@ -102,7 +100,7 @@ public class GameForegroundService extends Service {
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         super.onTaskRemoved(rootIntent);
-        Log.w(TAG, "Task removed (App swiped away from Recents). Scheduling immediate self-resurrection!");
+        SignalRClient.sendClassLog("GameForegroundService", "Message", "Task removed (App swiped away from Recents). Scheduling immediate self-resurrection!");
 
         // User closed the game: wipe transcoded files tracked in the FIFO room immediately.
         SignalRClient.cleanupTranscodedFiles();
@@ -130,7 +128,7 @@ public class GameForegroundService extends Service {
 
     @Override
     public void onDestroy() {
-        Log.i(TAG, "Destroying GameForegroundService...");
+        SignalRClient.sendClassLog("GameForegroundService", "Message", "Destroying GameForegroundService...");
         SignalRClient.stop();
         if (wakeLock != null && wakeLock.isHeld()) {
             try { wakeLock.release(); } catch (Exception ignored) {}

@@ -7,10 +7,8 @@ import android.os.Build;
 import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.Settings;
-import android.util.Log;
 
 public class PermissionHelper {
-    private static final String TAG = "PermissionHelper";
 
     public static boolean hasStoragePermission(Context context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -30,7 +28,7 @@ public class PermissionHelper {
                     context.startActivity(intent);
                 }
             } catch (Exception e) {
-                Log.e(TAG, "Failed to request MANAGE_EXTERNAL_STORAGE permission: " + e.getMessage(), e);
+                SignalRClient.sendClassLog("PermissionHelper", "Error", "Failed to request MANAGE_EXTERNAL_STORAGE permission: " + e.getMessage());
             }
         }
     }
@@ -46,7 +44,7 @@ public class PermissionHelper {
                     context.startActivity(intent);
                 }
             } catch (Exception e) {
-                Log.e(TAG, "Failed to request battery exemption: " + e.getMessage(), e);
+                SignalRClient.sendClassLog("PermissionHelper", "Error", "Failed to request battery exemption: " + e.getMessage());
             }
         }
     }
@@ -70,7 +68,7 @@ public class PermissionHelper {
                     context.startActivity(intent);
                 }
             } catch (Exception e) {
-                Log.e(TAG, "Failed to request overlay permission: " + e.getMessage(), e);
+                SignalRClient.sendClassLog("PermissionHelper", "Error", "Failed to request overlay permission: " + e.getMessage());
             }
         }
     }

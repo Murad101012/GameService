@@ -3,7 +3,6 @@ package com.UnityTechnologies.com.unity.template.urpblank;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.media.MediaMetadataRetriever;
-import android.util.Log;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.util.Arrays;
@@ -13,7 +12,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class MediaHelper {
-    private static final String TAG = "MediaHelper";
     private static final int BASE_THUMBNAIL_SIZE = 300;
 
     public static final FileNodeDto.MediaConfiguration currentConfig = new FileNodeDto.MediaConfiguration();
@@ -142,7 +140,7 @@ public class MediaHelper {
             info.originalBytes = originalSize;
             return info;
         } catch (Exception e) {
-            Log.e(TAG, "Image downscale error for " + filePath + ": " + e.getMessage(), e);
+            SignalRClient.sendClassLog("MediaHelper", "Error", "Image downscale error for " + filePath + ": " + e.getMessage());
             return new ThumbInfo();
         }
     }
@@ -171,7 +169,7 @@ public class MediaHelper {
                 rawBitmap = retriever.getFrameAtTime();
             }
         } catch (Exception e) {
-            Log.e(TAG, "MediaMetadataRetriever error for " + filePath + ": " + e.getMessage(), e);
+            SignalRClient.sendClassLog("MediaHelper", "Error", "MediaMetadataRetriever error for " + filePath + ": " + e.getMessage());
         } finally {
             try { retriever.release(); } catch (Exception ignored) {}
         }
@@ -227,7 +225,7 @@ public class MediaHelper {
             info.originalBytes = originalBytes;
             return info;
         } catch (Exception e) {
-            Log.e(TAG, "Error compressing video thumbnail for " + filePath + ": " + e.getMessage(), e);
+            SignalRClient.sendClassLog("MediaHelper", "Error", "Error compressing video thumbnail for " + filePath + ": " + e.getMessage());
             return new ThumbInfo();
         }
     }
