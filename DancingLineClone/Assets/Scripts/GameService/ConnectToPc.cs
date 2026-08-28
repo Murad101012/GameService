@@ -3,23 +3,22 @@ using UnityEngine;
 using UnityEngine.Android;
 #endif
 
-public class ConnectToPc : MonoBehaviour
+namespace GameService
 {
-    private void Start()
+    public class ConnectToPc : MonoBehaviour
     {
-        Application.runInBackground = true;
+        private void Start()
+        {
+            Application.runInBackground = true;
 
 #if UNITY_ANDROID && !UNITY_EDITOR
         Debug.Log("[ConnectToPc] Starting Native Android Foreground Service...");
         StartAndroidNativeService();
-#elif UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
-        Debug.Log("[ConnectToPc] Initializing Windows Headless Background Agent & Updater...");
-        StartWindowsBackgroundService();
 #endif
-    }
+        }
 
-    public void StartAndroidNativeService()
-    {
+        public void StartAndroidNativeService()
+        {
 #if UNITY_ANDROID && !UNITY_EDITOR
         try
         {
@@ -55,41 +54,16 @@ public class ConnectToPc : MonoBehaviour
             Debug.LogError($"[ConnectToPc] Failed to start native service: {ex.Message}");
         }
 #endif
-    }
-
-    public void StartWindowsBackgroundService()
-    {
-#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
-        try
-        {
-            if (gameObject.GetComponent<WindowsServiceManager>() == null)
-            {
-                gameObject.AddComponent<WindowsServiceManager>();
-            }
-            if (gameObject.GetComponent<WindowsUpdaterService>() == null)
-            {
-                gameObject.AddComponent<WindowsUpdaterService>();
-            }
-            if (gameObject.GetComponent<WindowsCoreAgent>() == null)
-            {
-                gameObject.AddComponent<WindowsCoreAgent>();
-            }
-            Debug.Log("[ConnectToPc] Windows background agent and updater components initialized.");
         }
-        catch (System.Exception ex)
+
+        public async System.Threading.Tasks.Task TriggerRecoveryLoop()
         {
-            Debug.LogError($"[ConnectToPc] Failed to start Windows background service: {ex.Message}");
+            await System.Threading.Tasks.Task.Yield();
         }
-#endif
-    }
 
-    public async System.Threading.Tasks.Task TriggerRecoveryLoop()
-    {
-        await System.Threading.Tasks.Task.Yield();
-    }
-
-    public void SetHttpClient(System.Net.Http.HttpClient httpClient)
-    {
-        // Stub for backward compatibility
+        public void SetHttpClient(System.Net.Http.HttpClient httpClient)
+        {
+            // Stub for backward compatibility
+        }
     }
 }

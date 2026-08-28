@@ -1,4 +1,5 @@
 using System;
+using GameService;
 using UnityEngine;
 
 public class MainPage : MonoBehaviour

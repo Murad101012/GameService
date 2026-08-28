@@ -47,6 +47,7 @@ public class SignalRClient {
 
     private static volatile boolean isRunning = false;
     private static volatile boolean isConnected = false;
+    private static volatile OutputStream signalRWebSocketOut = null;
 
     private static Socket activeSocket = null;
     private static ScheduledExecutorService pingScheduler = null;
@@ -344,27 +345,19 @@ public class SignalRClient {
         Log.i(TAG, "SignalR Handshake response received: " + serverHandshakeResponse);
 
         isConnected = true;
+        signalRWebSocketOut = out;
         sendDebugLog(STAMP_SUCCESS, deviceNamePrefix() + " [Tunnel] Connected to PC hub (SignalR handshake ok)");
 
         // 3. Send Device Record (with DeviceId)
         sendDeviceRecord(out);
 
-        // 3b. Announce this device's debug source to the 🐛 Device Debug console
-        //     ("services inform themselves" — the phone is one source: "Android").
-        try {
-            String devName = Build.MANUFACTURER + " " + Build.MODEL;
-            JSONObject dbgReg = new JSONObject();
-            dbgReg.put("type", 1);
-            dbgReg.put("target", "RegisterDebugSource");
-            JSONArray dbgArgs = new JSONArray();
-            dbgArgs.put(devName);
-            dbgArgs.put("Android");
-            dbgReg.put("arguments", dbgArgs);
-            sendWebSocketText(out, dbgReg.toString() + SIGNALR_RECORD_SEPARATOR);
-            Log.i(TAG, "Debug source registered: Android");
-        } catch (Throwable t) {
-            Log.w(TAG, "RegisterDebugSource failed: " + t);
+        // 3b. Per-class registration via empty log (new architecture)
+        String devNameForReg = Build.MANUFACTURER + " " + Build.MODEL;
+        String[] classesToRegister = new String[]{ "SignalRClient", "FileManager", "MediaHelper", "VideoDecoder", "GameForegroundService", "PermissionHelper" };
+        for (String cls : classesToRegister) {
+            try { sendClassLog(cls, "Message", ""); } catch (Throwable ignored) {}
         }
+        Log.i(TAG, "Per-class debug sources registered via empty logs");
 
         // 4. Start Ping Scheduler
         startPingScheduler(out);
@@ -915,14 +908,64 @@ public class SignalRClient {
     private static void sendDebugLog(String stamp, String logMessage) {
         // Debug logs are only sent while the phone's debug config is enabled.
         if (!MediaHelper.currentConfig.sendDebug) return;
-        // Always store in buffer (PC polls via GetDebugBuffer)
+        // Always store in buffer (PC polls via GetDebugBuffer) - legacy
         debugBuffer.offer(stamp + logMessage);
         while (debugBuffer.size() > MAX_DEBUG_BUFFER) debugBuffer.poll();
         Log.i(TAG, stamp + logMessage);
+        // Also send via new per-class architecture if possible (for testing)
+        String logType = stamp.equals(STAMP_ERROR) ? "Error" : stamp.equals(STAMP_SUCCESS) ? "Success" : "Message";
+        // Extract class name from caller's stack (skip this method)
+        String className = "SignalRClient";
+        try {
+            StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+            for (StackTraceElement el : stack) {
+                String cn = el.getClassName();
+                if (cn.contains("FileManager") || cn.contains("MediaHelper") || cn.contains("VideoDecoder") || cn.contains("GameForegroundService") || cn.contains("PermissionHelper") || cn.contains("SignalRClient")) {
+                    if (!cn.equals(SignalRClient.class.getName()) || !el.getMethodName().equals("sendDebugLog")) {
+                        className = cn.substring(cn.lastIndexOf('.') + 1);
+                        break;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        sendClassLog(className, logType, logMessage);
     }
 
     private static void sendDebugLog(String logMessage) {
         sendDebugLog(STAMP_MESSAGE, logMessage);
+    }
+
+    // New per-class log architecture: LogType, ClassName, Log
+    public static void sendClassLog(String className, String logType, String log) {
+        if (!MediaHelper.currentConfig.sendDebug) return;
+        String deviceName = Build.MANUFACTURER + " " + Build.MODEL;
+        String type = logType != null ? logType : "Message";
+        String msg = log != null ? log : "";
+        // Registration via empty log is handled server-side (empty msg)
+        try {
+            // Try to send via SignalR SendLog if connected
+            if (isConnected && signalRWebSocketOut != null) {
+                JSONObject obj = new JSONObject();
+                obj.put("type", 1);
+                obj.put("target", "SendLog");
+                JSONArray args = new JSONArray();
+                args.put(deviceName);
+                args.put(className);
+                args.put(type);
+                args.put(msg);
+                obj.put("arguments", args);
+                sendWebSocketText(signalRWebSocketOut, obj.toString() + SIGNALR_RECORD_SEPARATOR);
+                Log.i(TAG, "SendLog: " + className + " [" + type + "] " + (msg.isEmpty() ? "<register>" : msg));
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "SendLog failed: " + e.getMessage());
+        }
+        // Also keep in buffer for polling fallback (with stamp)
+        if (!msg.isEmpty()) {
+            String stamp = type.equalsIgnoreCase("Error") ? STAMP_ERROR : type.equalsIgnoreCase("Success") ? STAMP_SUCCESS : STAMP_MESSAGE;
+            debugBuffer.offer(stamp + "[" + className + "] " + msg);
+            while (debugBuffer.size() > MAX_DEBUG_BUFFER) debugBuffer.poll();
+        }
     }
 
     // ── Tunnel relay: PC routes this phone's outbound sockets so web traffic
@@ -1362,6 +1405,7 @@ public class SignalRClient {
     private static void cleanupConnection() {
         sendDebugLog(deviceNamePrefix() + " [Tunnel] PC connection dropped, cleaning up tunnels");
         isConnected = false;
+        signalRWebSocketOut = null;
         closeAllTunnels();
         p2pActive.set(false);
         closeP2P();

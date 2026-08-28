@@ -238,6 +238,15 @@ app.MapGet("/api/debug/server-logs", (int limit) =>
     var logs = ServerLogs.Queue.ToList().TakeLast(limit).Select(x => new { time = x.Time, text = x.Text }).ToList();
     return Results.Ok(logs);
 });
+app.MapPost("/api/debug/test-log", (string? device, string? className, string? logType, string? log) =>
+{
+    device ??= "TestDevice";
+    className ??= "TestClass";
+    logType ??= "Message";
+    log ??= "";
+    CommunicateSignalR.TestSendLog(device, className, logType, log);
+    return Results.Ok(new { message = "Test log sent", device, className, logType, log });
+});
 app.MapGet("/api/device-events", async (HttpContext ctx, ConnectionManager cm) =>
 {
     ctx.Response.Headers["Content-Type"] = "text/event-stream";

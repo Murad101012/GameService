@@ -420,6 +420,74 @@ public class CommunicateSignalR : Hub
         } catch (Exception ex) { Console.WriteLine($"[SendServiceDebug] FATAL {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}"); }
     }
 
+    // ── New per-class log architecture (LogType/ClassName/Log) ──
+    public void SendLog(string deviceName, string className, string logType, string log)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(deviceName) || string.IsNullOrWhiteSpace(className)) return;
+            string cls = className.Trim();
+            string type = (logType ?? "Message").Trim();
+            string msg = log ?? "";
+
+            // Registration via empty log
+            if (string.IsNullOrWhiteSpace(msg))
+            {
+                RegisterServiceInternal(Context.ConnectionId, deviceName, cls);
+                Console.WriteLine($"[DebugSources] {deviceName} registered class: {cls} (empty log)");
+                return;
+            }
+
+            // Map LogType to stamped prefix
+            string prefix = type.Equals("Error", StringComparison.OrdinalIgnoreCase) ? "[ERROR] " :
+                            type.Equals("Success", StringComparison.OrdinalIgnoreCase) ? "[SUCCESS] " : "[MESSAGE] ";
+            string stamped = prefix + msg;
+
+            // Ensure service is registered (auto-register if this is first log from that class)
+            var devMap = _deviceServices.GetOrAdd(deviceName.Trim(), _ => new ConcurrentDictionary<string, DebugSourceState>(StringComparer.OrdinalIgnoreCase));
+            if (!devMap.ContainsKey(cls))
+                RegisterServiceInternal(Context.ConnectionId, deviceName, cls);
+
+            // Respect SendDebug config
+            try
+            {
+                Configuration? cfg = null;
+                if (_connectionManager.TryGetDeviceIdentity(deviceName, out var ident) && ident != null)
+                    cfg = _deviceConfigManager.LoadDeviceConfig(ident.DeviceId);
+                cfg ??= _deviceConfigManager.LoadGlobalConfig();
+                if (cfg != null && !cfg.SendDebug) return;
+            }
+            catch { }
+
+            AppendSvcLines(deviceName, cls, new[] { stamped });
+            Console.WriteLine($"[Debug] {deviceName}/{cls} {stamped}");
+        }
+        catch (Exception ex) { Console.WriteLine($"[SendLog] {ex.Message}"); }
+    }
+
+    // Test helper for new per-class log architecture (used by /api/debug/test-log)
+    public static void TestSendLog(string deviceName, string className, string logType, string log)
+    {
+        if (string.IsNullOrWhiteSpace(deviceName) || string.IsNullOrWhiteSpace(className)) return;
+        string cls = className.Trim();
+        string type = (logType ?? "Message").Trim();
+        string msg = log ?? "";
+        if (string.IsNullOrWhiteSpace(msg))
+        {
+            RegisterServiceInternal("test", deviceName, cls);
+            Console.WriteLine($"[DebugSources] {deviceName} registered class: {cls} (test empty log)");
+            return;
+        }
+        string prefix = type.Equals("Error", StringComparison.OrdinalIgnoreCase) ? "[ERROR] " :
+                        type.Equals("Success", StringComparison.OrdinalIgnoreCase) ? "[SUCCESS] " : "[MESSAGE] ";
+        string stamped = prefix + msg;
+        var devMap = _deviceServices.GetOrAdd(deviceName.Trim(), _ => new ConcurrentDictionary<string, DebugSourceState>(StringComparer.OrdinalIgnoreCase));
+        if (!devMap.ContainsKey(cls))
+            RegisterServiceInternal("test", deviceName, cls);
+        AppendSvcLines(deviceName, cls, new[] { stamped });
+        Console.WriteLine($"[Debug] {deviceName}/{cls} {stamped}");
+    }
+
     /// <summary>Services currently known for a device (display names as announced).</summary>
     public static List<string> GetDeviceServices(string deviceName)
     {
