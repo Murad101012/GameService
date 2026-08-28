@@ -34,20 +34,41 @@ function debugLineClass(text) {
     return 'debug-message';
 }
 
+let dbgUserAtBottom = true;
 function renderDebugLogs() {
     const list = document.getElementById('debug-log-list');
     if (!list) return;
+    // Use sticky flag updated on scroll; fallback to geometry check for first render
+    const atBottom = dbgUserAtBottom && (list.scrollHeight - list.scrollTop - list.clientHeight < 12);
+    const prevTop = list.scrollTop;
+    const prevHeight = list.scrollHeight;
     list.innerHTML = debugLogs.map(l =>
         `<div class="debug-log-line ${debugLineClass(l.text)}"><span class="debug-log-time">${l.time}</span> ${escHtml(l.text)}</div>`
     ).join('');
-    list.scrollTop = list.scrollHeight;
+    if (atBottom) list.scrollTop = list.scrollHeight;
+    else {
+        // Keep visual position stable when new logs arrive while scrolled up
+        const delta = list.scrollHeight - prevHeight;
+        if (delta) list.scrollTop = prevTop + delta;
+    }
 }
 
 function toggleDebugPanel() {
     document.getElementById('debug-panel')?.classList.toggle('hidden');
 }
 
-function clearDebugLogs() {
+async function clearDebugLogs() {
+    // Separated → clear only current service; All → clear all services for device; Server → clear server logs
+    // Always clear local view; server clear is best-effort (separated with no service selected: only local)
+    try {
+        if (dbgSelectedDevice === '__server__') {
+            await fetch('/api/debug/clear?device=__server__', { method: 'POST' });
+        } else if (dbgMode === 'separated' && dbgSelectedService) {
+            await fetch('/api/debug/clear?device=' + encodeURIComponent(dbgSelectedDevice) + '&service=' + encodeURIComponent(dbgSelectedService), { method: 'POST' });
+        } else if (dbgMode === 'all' && dbgSelectedDevice) {
+            await fetch('/api/debug/clear?device=' + encodeURIComponent(dbgSelectedDevice), { method: 'POST' });
+        }
+    } catch {}
     debugLogs.length = 0;
     renderDebugLogs();
 }
@@ -197,11 +218,13 @@ async function dbgPollOnce() {
         if (!url) return;
         const r = await fetch(url);
         const d = await r.json();
-        if (!d.success || !Array.isArray(d.logs)) return;
+        // endpoints return bare arrays; tolerate both {success,logs} and bare []
+        const arr = Array.isArray(d) ? d : (Array.isArray(d.logs) ? d.logs : null);
+        if (!arr) return;
 
         // Replace view with latest snapshot (queues cap server-side).
         debugLogs.length = 0;
-        for (const l of d.logs.slice(-MAX_DEBUG_LOGS)) {
+        for (const l of arr.slice(-MAX_DEBUG_LOGS)) {
             debugLogs.push({ time: new Date(l.time).toLocaleTimeString(), text: l.text });
         }
         renderDebugLogs();
@@ -242,6 +265,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     dbgFetchTargets();
     setInterval(dbgPollOnce, 2000);
+    // track whether user is at bottom to make auto-scroll sticky
+    setTimeout(() => {
+        const list = document.getElementById('debug-log-list');
+        if (!list) return;
+        list.addEventListener('scroll', () => {
+            dbgUserAtBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 12;
+        });
+        // initial state: at bottom
+        dbgUserAtBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 12;
+    }, 500);
 });
 
 // ── File Filters ────────────────────────────────────────────────────────────

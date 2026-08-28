@@ -47,7 +47,7 @@ public class NsfwService : IDisposable
             _scriptPath = Path.Combine(serviceDir, "nsfw_service.py");
         }
 
-        Console.WriteLine($"[NSFW] Python: {_pythonPath}, Script: {_scriptPath}");
+        /* Console.WriteLine($"[NSFW] Python: {_pythonPath}, Script: {_scriptPath}"); */
     }
 
     /// <summary>
@@ -307,7 +307,7 @@ public class NsfwService : IDisposable
                     {
                         case "status":
                             string? msg = root.TryGetProperty("message", out var msgProp) ? msgProp.GetString() : "";
-                            Console.WriteLine($"[NSFW] Status: {msg}");
+                            /* Console.WriteLine($"[NSFW] Status: {msg}"); */
 
                             if (msg?.Contains("Model loaded") == true || msg?.Contains("already loaded") == true)
                             {
@@ -350,7 +350,7 @@ public class NsfwService : IDisposable
                         case "error":
                             int errId = root.TryGetProperty("id", out var eidProp) ? eidProp.GetInt32() : -1;
                             string errMsg = root.TryGetProperty("message", out var emProp) ? emProp.GetString() ?? "Unknown error" : "Unknown error";
-                            Console.WriteLine($"[NSFW] Error (id={errId}): {errMsg}");
+                            /* Console.WriteLine($"[NSFW] Error (id={errId}): {errMsg}"); */
 
                             if (errId >= 0 && _pendingQueries.TryRemove(errId, out var errTcs))
                             {
@@ -361,7 +361,7 @@ public class NsfwService : IDisposable
                 }
                 catch (JsonException ex)
                 {
-                    Console.WriteLine($"[NSFW] JSON parse error: {ex.Message}");
+                    /* Console.WriteLine($"[NSFW] JSON parse error: {ex.Message}"); */
                 }
             }
         }
@@ -369,7 +369,7 @@ public class NsfwService : IDisposable
         catch (IOException) { }
         catch (Exception ex)
         {
-            Console.WriteLine($"[NSFW] Stdout read error: {ex.Message}");
+            /* Console.WriteLine($"[NSFW] Stdout read error: {ex.Message}"); */
         }
     }
 
@@ -381,14 +381,14 @@ public class NsfwService : IDisposable
             {
                 string? line = await proc.StandardError.ReadLineAsync(ct);
                 if (line == null) break;
-                Console.WriteLine($"[moondream-py] {line}");
+                /* Console.WriteLine($"[moondream-py] {line}"); */
             }
         }
         catch (OperationCanceledException) { }
         catch (IOException) { }
         catch (Exception ex)
         {
-            Console.WriteLine($"[NSFW] Stderr read error: {ex.Message}");
+            /* Console.WriteLine($"[NSFW] Stderr read error: {ex.Message}"); */
         }
     }
 

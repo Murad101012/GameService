@@ -68,7 +68,7 @@ public sealed class RunNotifier
             }
             _proc.ErrorDataReceived += (_, e) =>
             {
-                if (!string.IsNullOrEmpty(e.Data)) Console.WriteLine($"[jobview] {e.Data}");
+                if (!string.IsNullOrEmpty(e.Data)) { } // silenced
             };
             _proc.BeginErrorReadLine();
             _writer = _proc.StandardInput;
@@ -80,7 +80,7 @@ public sealed class RunNotifier
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[RunNotifier] Start failed: {ex.Message}");
+            /* Console.WriteLine($"[RunNotifier] Start failed: {ex.Message}"); */
         }
         finally
         {
@@ -130,7 +130,7 @@ public sealed class RunNotifier
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[RunNotifier] Update failed: {ex.Message}");
+                /* Console.WriteLine($"[RunNotifier] Update failed: {ex.Message}"); */
             }
         }
     }
@@ -156,7 +156,7 @@ public sealed class RunNotifier
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[RunNotifier] Finish failed: {ex.Message}");
+                /* Console.WriteLine($"[RunNotifier] Finish failed: {ex.Message}"); */
             }
         }
 

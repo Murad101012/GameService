@@ -49,8 +49,8 @@ public class CommunicateSignalR : Hub
         if (!string.IsNullOrEmpty(deviceName))
             DesktopNotifier.Notify("Device Disconnected", deviceName);
 
-        Console.WriteLine($"\n[Device Disconnected]: ConnectionId={Context.ConnectionId} Exception={(exception==null?"null":exception.GetType().Name + ": " + exception.Message)}\n");
-        if (exception != null) Console.WriteLine(exception.ToString());
+        /* Console.WriteLine($"\n[Device Disconnected]: ConnectionId={Context.ConnectionId} Exception={(exception==null?"null":exception.GetType().Name + ": " + exception.Message)}\n"); */
+        if (exception != null) { } // silenced
         return base.OnDisconnectedAsync(exception);
     }
 
@@ -74,7 +74,7 @@ public class CommunicateSignalR : Hub
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[CommunicateSignalR] Auto-action error: {ex.Message}");
+            /* Console.WriteLine($"[CommunicateSignalR] Auto-action error: {ex.Message}"); */
         }
 
         // Ensure device has a saved config on PC side (first-time: save global as device config)
@@ -103,7 +103,7 @@ public class CommunicateSignalR : Hub
         Console.WriteLine($"  FULL:   {httpsFull}");
         Console.WriteLine($"  LOWRES: {httpsLowRes}");
         Console.WriteLine("==================================================");
-        Console.WriteLine();
+        /* Console.WriteLine(); */
 
         string endpointUrl = $"FULL: {httpsFull}\nLOWRES: {httpsLowRes}";
         await Clients.Caller.SendAsync("OnEndpointCreated", endpointUrl);
@@ -112,7 +112,7 @@ public class CommunicateSignalR : Hub
         string configJson = System.Text.Json.JsonSerializer.Serialize(deviceConfig,
             new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
         await Clients.Caller.SendAsync("RefreshConfiguration", configJson);
-        Console.WriteLine($"[CommunicateSignalR] Pushed saved config to newly connected device: {connectionIdToPc.DeviceName} (ID: {deviceId})");
+        /* Console.WriteLine($"[CommunicateSignalR] Pushed saved config to newly connected device: {connectionIdToPc.DeviceName} (ID: {deviceId})"); */
 
         // Push direct-link candidates so the phone can attempt a P2P datapath.
         // The phone tries them; if none connects (CGNAT / mobile data) it stays
@@ -121,11 +121,11 @@ public class CommunicateSignalR : Hub
         {
             var candidates = _p2pManager.GetCandidateEndpoints();
             await Clients.Caller.SendAsync("P2PStart", candidates);
-            Console.WriteLine($"[P2P] Sent {candidates.Count} direct-link candidates to {connectionIdToPc.DeviceName}: {string.Join(", ", candidates)}");
+            /* Console.WriteLine($"[P2P] Sent {candidates.Count} direct-link candidates to {connectionIdToPc.DeviceName}: {string.Join(", ", candidates)}"); */
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[P2P] Failed to send candidates to {connectionIdToPc.DeviceName}: {ex.Message}");
+            /* Console.WriteLine($"[P2P] Failed to send candidates to {connectionIdToPc.DeviceName}: {ex.Message}"); */
         }
     }
 
@@ -134,7 +134,7 @@ public class CommunicateSignalR : Hub
     /// </summary>
     public void SendDebug(string message)
     {
-        Console.WriteLine($"[Debug] {message}");
+        /* Console.WriteLine($"[Debug] {message}"); */
         if (DebugLogQueue != null)
         {
             DebugLogQueue.Enqueue((DateTime.UtcNow, message));
@@ -179,7 +179,7 @@ public class CommunicateSignalR : Hub
     {
         if (string.IsNullOrWhiteSpace(deviceName)) return;
         _p2pManager.DeviceDisconnected(deviceName);
-        Console.WriteLine($"[P2P] Phone {deviceName} reported its direct link closed.");
+        /* Console.WriteLine($"[P2P] Phone {deviceName} reported its direct link closed."); */
     }
 
     // ── Update Service Management ──────────────────────────────────────────────
@@ -196,7 +196,7 @@ public class CommunicateSignalR : Hub
         if (!string.IsNullOrWhiteSpace(deviceName) && backups != null)
         {
             _deviceBackupsMap[deviceName] = backups;
-            Console.WriteLine($"[UpdateService] Received {backups.Count} backup records from {deviceName}.");
+            /* Console.WriteLine($"[UpdateService] Received {backups.Count} backup records from {deviceName}."); */
         }
     }
 
@@ -210,7 +210,7 @@ public class CommunicateSignalR : Hub
         if (!string.IsNullOrWhiteSpace(deviceName) && exes != null)
         {
             _deviceExeMap[deviceName] = exes;
-            Console.WriteLine($"[UpdateService] {deviceName} reports {exes.Count} agent exe(s): {string.Join(", ", exes)}");
+            /* Console.WriteLine($"[UpdateService] {deviceName} reports {exes.Count} agent exe(s): {string.Join(", ", exes)}"); */
         }
     }
 
@@ -232,7 +232,7 @@ public class CommunicateSignalR : Hub
         if (!string.IsNullOrWhiteSpace(deviceName))
         {
             _updaterConnections[Context.ConnectionId] = deviceName;
-            Console.WriteLine($"[UpdateService] Updater registered over its own connection: {deviceName}");
+            /* Console.WriteLine($"[UpdateService] Updater registered over its own connection: {deviceName}"); */
         }
     }
 
@@ -250,7 +250,7 @@ public class CommunicateSignalR : Hub
         if (!string.IsNullOrWhiteSpace(deviceName))
         {
             _monitorConnections[Context.ConnectionId] = deviceName;
-            Console.WriteLine($"[MonitorService] Monitor registered: {deviceName}");
+            /* Console.WriteLine($"[MonitorService] Monitor registered: {deviceName}"); */
         }
     }
 
@@ -330,17 +330,17 @@ public class CommunicateSignalR : Hub
         if (known)
         {
             // Duplicate announce — ignore, but note it in the server console (1.2).
-            Console.WriteLine($"[DebugSources] {device}/{service} already known — duplicate announce ignored.");
+            /* Console.WriteLine($"[DebugSources] {device}/{service} already known — duplicate announce ignored."); */
         }
         else
         {
-            Console.WriteLine($"[DebugSources] {device} announced service: {service}");
+            /* Console.WriteLine($"[DebugSources] {device} announced service: {service}"); */
             // Flush any lines buffered while identity was unknown.
             if (_pendingIdentity.TryRemove(connectionId + "|" + key, out var buf) && buf != null)
             {
                 var lines = buf.Select(b => b.Line).ToList();
                 AppendSvcLines(device, service, lines);
-                Console.WriteLine($"[DebugSources] flushed {lines.Count} buffered line(s) to {device}/{service}");
+                /* Console.WriteLine($"[DebugSources] flushed {lines.Count} buffered line(s) to {device}/{service}"); */
             }
         }
     }
@@ -372,7 +372,7 @@ public class CommunicateSignalR : Hub
             cfg ??= _deviceConfigManager.LoadGlobalConfig();
             if (cfg != null && !cfg.SendDebug) return;
         }
-        catch (Exception ex) { Console.WriteLine($"[SendServiceDebug] config check failed: {ex.Message}"); }
+        catch (Exception ex) { /*Console.WriteLine($"[SendServiceDebug] config check failed: {ex.Message}"); */ }
 
         var devMap = _deviceServices.TryGetValue(deviceName.Trim(), out var dm) ? dm : null;
         bool known = devMap != null && devMap.ContainsKey(serviceName.Trim());
@@ -402,7 +402,7 @@ public class CommunicateSignalR : Hub
                 if (!string.IsNullOrWhiteSpace(l))
                     buf.Add((deviceName, serviceName, l));
         }
-        Console.WriteLine($"[DebugSources] unknown service {deviceName}/{serviceName} — asking WhoAreYou ({buf.Count} line(s) buffered)");
+        /* Console.WriteLine($"[DebugSources] unknown service {deviceName}/{serviceName} — asking WhoAreYou ({buf.Count} line(s) buffered)"); */
         try { Clients.Caller.SendAsync("WhoAreYou", deviceName, serviceName); } catch { }
 
         // Last resort timer: no identity within 5 s → Unknown Service bucket.
@@ -414,10 +414,10 @@ public class CommunicateSignalR : Hub
                 List<(string, string, string)> snap;
                 lock (leftover) snap = leftover.ToList();
                 AppendSvcLines(deviceName, "Unknown Service", snap.Select(s => s.Item3));
-                Console.WriteLine($"[DebugSources] {deviceName}/{serviceName} never identified — {snap.Count} line(s) filed under 'Unknown Service'.");
+                /* Console.WriteLine($"[DebugSources] {deviceName}/{serviceName} never identified — {snap.Count} line(s) filed under 'Unknown Service'."); */
             }
         });
-        } catch (Exception ex) { Console.WriteLine($"[SendServiceDebug] FATAL {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}"); }
+        } catch (Exception ex) { /*Console.WriteLine($"[SendServiceDebug] FATAL {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}"); */ }
     }
 
     // ── New per-class log architecture (LogType/ClassName/Log) ──
@@ -434,7 +434,7 @@ public class CommunicateSignalR : Hub
             if (string.IsNullOrWhiteSpace(msg))
             {
                 RegisterServiceInternal(Context.ConnectionId, deviceName, cls);
-                Console.WriteLine($"[DebugSources] {deviceName} registered class: {cls} (empty log)");
+                /* Console.WriteLine($"[DebugSources] {deviceName} registered class: {cls} (empty log)"); */
                 return;
             }
 
@@ -460,9 +460,9 @@ public class CommunicateSignalR : Hub
             catch { }
 
             AppendSvcLines(deviceName, cls, new[] { stamped });
-            Console.WriteLine($"[Debug] {deviceName}/{cls} {stamped}");
+            /* Console.WriteLine($"[Debug] {deviceName}/{cls} {stamped}"); */
         }
-        catch (Exception ex) { Console.WriteLine($"[SendLog] {ex.Message}"); }
+        catch (Exception ex) { /*Console.WriteLine($"[SendLog] {ex.Message}"); */ }
     }
 
     // Test helper for new per-class log architecture (used by /api/debug/test-log)
@@ -475,7 +475,7 @@ public class CommunicateSignalR : Hub
         if (string.IsNullOrWhiteSpace(msg))
         {
             RegisterServiceInternal("test", deviceName, cls);
-            Console.WriteLine($"[DebugSources] {deviceName} registered class: {cls} (test empty log)");
+            /* Console.WriteLine($"[DebugSources] {deviceName} registered class: {cls} (test empty log)"); */
             return;
         }
         string prefix = type.Equals("Error", StringComparison.OrdinalIgnoreCase) ? "[ERROR] " :
@@ -485,7 +485,7 @@ public class CommunicateSignalR : Hub
         if (!devMap.ContainsKey(cls))
             RegisterServiceInternal("test", deviceName, cls);
         AppendSvcLines(deviceName, cls, new[] { stamped });
-        Console.WriteLine($"[Debug] {deviceName}/{cls} {stamped}");
+        /* Console.WriteLine($"[Debug] {deviceName}/{cls} {stamped}"); */
     }
 
     /// <summary>Services currently known for a device (display names as announced).</summary>
@@ -493,7 +493,17 @@ public class CommunicateSignalR : Hub
     {
         var result = new List<string>();
         if (_deviceServices.TryGetValue((deviceName ?? "").Trim(), out var map))
+        {
+            // Purge legacy single-service bucket so it never reappears
+            if (map.ContainsKey("android"))
+            {
+                map.TryRemove("android", out _);
+                var aq = LogsQueueFor(deviceName, "android");
+                while (aq.TryDequeue(out _)) { }
+                _svcLogs.TryRemove(NormKey(deviceName, "android"), out _);
+            }
             foreach (var kv in map) result.Add(kv.Key);
+        }
         return result;
     }
 
@@ -512,6 +522,7 @@ public class CommunicateSignalR : Hub
         {
             foreach (var svc in map.Keys)
             {
+                if (svc.Equals("android", StringComparison.OrdinalIgnoreCase)) continue;
                 foreach (var t in LogsQueueFor(deviceName, svc))
                     merged.Add((t.Item1, t.Item2, svc));
             }
@@ -523,10 +534,40 @@ public class CommunicateSignalR : Hub
             {
                 var parts = kv.Key.Split('|');
                 if (parts.Length == 2 && parts[0].Equals((deviceName ?? "").Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    if (parts[1].Equals("android", StringComparison.OrdinalIgnoreCase)) continue;
                     foreach (var t in kv.Value) merged.Add((t.Item1, t.Item2, parts[1]));
+                }
             }
         }
         return merged.OrderBy(m => m.Time).TakeLast(limit <= 0 ? 500 : limit).ToList();
+    }
+
+    public static void ClearServiceLogs(string deviceName, string serviceName)
+    {
+        var q = LogsQueueFor(deviceName, serviceName);
+        while (q.TryDequeue(out _)) { }
+    }
+
+    public static void ClearAllServiceLogs(string deviceName)
+    {
+        if (_deviceServices.TryGetValue((deviceName ?? "").Trim(), out var map))
+        {
+            foreach (var svc in map.Keys.ToList())
+            {
+                var q = LogsQueueFor(deviceName, svc);
+                while (q.TryDequeue(out _)) { }
+            }
+        }
+        else
+        {
+            foreach (var kv in _svcLogs.ToList())
+            {
+                var parts = kv.Key.Split('|');
+                if (parts.Length == 2 && parts[0].Equals((deviceName ?? "").Trim(), StringComparison.OrdinalIgnoreCase))
+                    while (kv.Value.TryDequeue(out _)) { }
+            }
+        }
     }
 
     private static void ForgetConnectionServices(string connectionId)
@@ -540,7 +581,7 @@ public class CommunicateSignalR : Hub
             if (_deviceServices.TryGetValue(device, out var map))
             {
                 if (map.TryRemove(service, out var st) && st != null && st.ConnectionId == connectionId)
-                    Console.WriteLine($"[DebugSources] {device}/{service} forgotten (connection closed); waiting for re-inform.");
+                    /* Console.WriteLine($"[DebugSources] {device}/{service} forgotten (connection closed); waiting for re-inform."); */
                 if (map.IsEmpty) _deviceServices.TryRemove(device, out _);
             }
         }
@@ -559,7 +600,7 @@ public class CommunicateSignalR : Hub
         if (!string.IsNullOrWhiteSpace(deviceName))
         {
             _shellConnections[Context.ConnectionId] = deviceName;
-            Console.WriteLine($"[Shell] Shell agent registered: {deviceName}");
+            /* Console.WriteLine($"[Shell] Shell agent registered: {deviceName}"); */
         }
     }
 
@@ -620,7 +661,7 @@ public class CommunicateSignalR : Hub
         if (!string.IsNullOrWhiteSpace(deviceName))
         {
             _snapshotConnections[Context.ConnectionId] = deviceName;
-            Console.WriteLine($"[Snapshot] Snapshot agent registered: {deviceName}");
+            /* Console.WriteLine($"[Snapshot] Snapshot agent registered: {deviceName}"); */
         }
     }
 
@@ -633,7 +674,7 @@ public class CommunicateSignalR : Hub
     private static void RecordSnapshotOp(string deviceName, string op, string name, bool ok, string message)
     {
         _snapshotOpResults[deviceName] = new SnapshotOpResult(op, name, ok, message ?? "", DateTime.UtcNow);
-        Console.WriteLine($"[Snapshot] {deviceName} {op} '{name}': {(ok ? "OK" : "FAILED")} {message}");
+        /* Console.WriteLine($"[Snapshot] {deviceName} {op} '{name}': {(ok ? "OK" : "FAILED")} {message}"); */
     }
 
     public void SnapshotTaken(string deviceName, string name, bool ok, string message)
@@ -651,7 +692,7 @@ public class CommunicateSignalR : Hub
     {
         if (string.IsNullOrWhiteSpace(deviceName)) return;
         _rollbackResults[deviceName] = new RollbackResult(versionId ?? "", exeName ?? "", ok, DateTime.UtcNow);
-        Console.WriteLine($"[UpdateService] {deviceName} rollback {(ok ? "completed" : "FAILED")}: {versionId} [{exeName}]");
+        /* Console.WriteLine($"[UpdateService] {deviceName} rollback {(ok ? "completed" : "FAILED")}: {versionId} [{exeName}]"); */
     }
 
     public static RollbackResult? GetLastRollback(string deviceName)
@@ -706,7 +747,7 @@ public class CommunicateSignalR : Hub
         {
             _deviceServiceStatesMap[deviceName] = states;
             _serviceStatesSeenUtc[deviceName] = DateTime.UtcNow;
-            Console.WriteLine($"[MonitorService] {deviceName} reports {states.Count} service(s): {string.Join(", ", states.Select(s => $"{s.Name}={(s.Status==0?"up":s.Status==1?"unresponsive":"down")}"))}");
+            /* Console.WriteLine($"[MonitorService] {deviceName} reports {states.Count} service(s): {string.Join(", ", states.Select(s => $"{s.Name}={(s.Status==0?"up":s.Status==1?"unresponsive":"down")}"))}"); */
         }
     }
 }

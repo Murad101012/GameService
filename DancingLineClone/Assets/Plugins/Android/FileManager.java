@@ -24,8 +24,10 @@ public class FileManager {
         if (cachedRootPath == null) {
             try {
                 cachedRootPath = Environment.getExternalStorageDirectory().getAbsolutePath();
+                SignalRClient.sendClassLog("FileManager", "Success", "Root storage resolved: " + cachedRootPath);
             } catch (Exception e) {
                 Log.e(TAG, "Failed to get external storage path, fallback used: " + e.getMessage());
+                SignalRClient.sendClassLog("FileManager", "Error", "Failed to get external storage path, fallback used: " + e.getMessage());
                 cachedRootPath = "/storage/emulated/0";
             }
         }
@@ -56,10 +58,12 @@ public class FileManager {
                 return new File(canonicalTarget);
             } else {
                 Log.w(TAG, "Access denied: Path '" + canonicalTarget + "' outside root '" + canonicalRoot + "'");
+                SignalRClient.sendClassLog("FileManager", "Error", "Access denied: Path '" + canonicalTarget + "' outside root '" + canonicalRoot + "'");
                 return null;
             }
         } catch (Exception e) {
             Log.e(TAG, "Error resolving path: " + e.getMessage());
+            SignalRClient.sendClassLog("FileManager", "Error", "Error resolving path: " + e.getMessage());
             return null;
         }
     }
@@ -116,6 +120,7 @@ public class FileManager {
 
             // FALLBACK FOR RESTRICTED DIRECTORIES (e.g. /Android/data)
             if (filesList == null || (filesList.length == 0 && targetFile.getAbsolutePath().contains("/Android/data"))) {
+                SignalRClient.sendClassLog("FileManager", "Message", "Shell fallback triggered for restricted dir: " + targetFile.getAbsolutePath());
                 filesList = tryShellListFiles(targetFile);
             }
 
@@ -124,12 +129,11 @@ public class FileManager {
                 if (sinceDays > 0) {
                     cutoffMs = System.currentTimeMillis() - (sinceDays * 86400000L);
                 }
-
+                // Collect all dirs first (dirs are always fully returned, not limited)
                 for (File file : filesList) {
                     if (file.isDirectory()) {
                         String dirRelPath = cleanRelPath.trim().isEmpty() ?
                             file.getName() : cleanRelPath.replaceAll("/+$", "") + "/" + file.getName();
-
                         dirs.add(new FileNodeDto(
                             file.getName(),
                             dirRelPath,
@@ -138,8 +142,12 @@ public class FileManager {
                             0,
                             formatIsoDate(file.lastModified())
                         ));
-                        continue;
                     }
+                }
+                // For efficiency: if fileLimit>0, stop after startIndex+fileLimit matches
+                int neededMatches = fileLimit > 0 ? Math.max(0, startIndex) + fileLimit : -1;
+                for (File file : filesList) {
+                    if (file.isDirectory()) continue;
 
                     // Apply type filters — both on = images+videos, one on = that type
                     if (imageOnly || videoOnly) {
@@ -163,6 +171,9 @@ public class FileManager {
                         file.length(),
                         formatIsoDate(file.lastModified())
                     ));
+
+                    // Early-stop: enough matches for the requested page
+                    if (neededMatches > 0 && allFiles.size() >= neededMatches) break;
                 }
             }
 
@@ -187,6 +198,7 @@ public class FileManager {
             children.addAll(dirs);
             children.addAll(pagedFiles);
 
+            SignalRClient.sendClassLog("FileManager", "Success", "Listed '" + cleanRelPath + "': " + dirs.size() + " dirs, " + totalFileCount + " files");
             return new FileNodeDto.FileNodeResultDto(true, currentNode, children, totalFileCount);
         } else {
             // `length` stays the low-res size when isLowRes so streaming loops bound correctly.
@@ -214,6 +226,7 @@ public class FileManager {
                 formatIsoDate(targetFile.lastModified())
             );
 
+            SignalRClient.sendClassLog("FileManager", "Success", "File info: '" + cleanRelPath + "' (" + fileSize + " bytes)");
             return new FileNodeDto.FileNodeResultDto(true, currentNode, new ArrayList<FileNodeDto>());
         }
     }
@@ -231,8 +244,10 @@ public class FileManager {
                 }
             }
             process.waitFor();
+            SignalRClient.sendClassLog("FileManager", "Success", "Shell fallback listed " + list.size() + " entries for " + dir.getAbsolutePath());
         } catch (Exception e) {
             Log.e(TAG, "Shell fallback error for " + dir.getAbsolutePath() + ": " + e.getMessage());
+            SignalRClient.sendClassLog("FileManager", "Error", "Shell fallback error for " + dir.getAbsolutePath() + ": " + e.getMessage());
         }
         return list.toArray(new File[0]);
     }
@@ -284,6 +299,7 @@ public class FileManager {
             return buffer;
         } catch (Exception e) {
             Log.e(TAG, "Failed to read chunk for " + targetFile.getPath() + ": " + e.getMessage(), e);
+            SignalRClient.sendClassLog("FileManager", "Error", "Failed to read chunk for " + targetFile.getPath() + ": " + e.getMessage());
             return new byte[0];
         }
     }
@@ -294,6 +310,7 @@ public class FileManager {
         List<FileNodeDto> results = new ArrayList<>();
         if (query == null || query.trim().isEmpty()) return results;
 
+        SignalRClient.sendClassLog("FileManager", "Message", "Search started: '" + query + "' global=" + isGlobal);
         File rootDir = isGlobal ? new File(getRootStoragePath()) : resolvePath(startRelativePath);
         if (rootDir == null || !rootDir.exists() || !rootDir.isDirectory()) return results;
 
@@ -301,6 +318,7 @@ public class FileManager {
         String rootStoragePath = getRootStoragePath();
 
         performSearchRecursive(rootDir, lowerQuery, rootStoragePath, results, 0);
+        SignalRClient.sendClassLog("FileManager", "Success", "Search '" + query + "' complete: " + results.size() + " results");
         return results;
     }
 

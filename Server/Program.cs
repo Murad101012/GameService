@@ -70,14 +70,14 @@ if (savedAllowLan)
     var lanUrls = SettingsManager.GetLocalLanUrls(savedPort);
     if (lanUrls.Count > 0)
     {
-        Console.WriteLine("[WebUI] LAN access ENABLED — reachable from same network at:");
-        foreach (var u in lanUrls) Console.WriteLine($"  {u}  (open on phone)");
+        /* Console.WriteLine("[WebUI] LAN access ENABLED — reachable from same network at:"); */
+        /* foreach (var u in lanUrls) Console.WriteLine($"  {u}  (open on phone)"); */
     }
     else
-        Console.WriteLine($"[WebUI] LAN access ENABLED — listening on 0.0.0.0:{savedPort} (no private IP detected yet)");
+        { } /* silenced */
 }
 else
-    Console.WriteLine($"[WebUI] LAN access disabled — only http://127.0.0.1:{savedPort} works. Enable in Settings → Allow LAN Access to open from phone on same Wi-Fi.");
+    { } /* silenced */
 
 // On shutdown, tell connected phones the server is stopping so their clients can
 // drop the connection immediately instead of Kestrel waiting for the drain.
@@ -108,7 +108,7 @@ try
 }
 catch (Exception ex)
 {
-    Console.WriteLine($"[Tunnel] Failed to start SOCKS5 proxy: {ex.Message}");
+    /* Console.WriteLine($"[Tunnel] Failed to start SOCKS5 proxy: {ex.Message}"); */
 }
 
 // Crash recovery for TUN full-capture: clean up any routes/processes left behind
@@ -116,7 +116,7 @@ catch (Exception ex)
 _ = Task.Run(async () =>
 {
     try { await app.Services.GetRequiredService<TunCaptureController>().SweepStartupAsync(); }
-    catch (Exception ex) { Console.WriteLine($"[Tunnel] Startup sweep error: {ex.Message}"); }
+    catch (Exception ex) { /*Console.WriteLine($"[Tunnel] Startup sweep error: {ex.Message}"); */ }
 });
 
 // Start the P2P direct-datapath listener. Bind failures are logged, never fatal —
@@ -127,7 +127,7 @@ try
 }
 catch (Exception ex)
 {
-    Console.WriteLine($"[P2P] Failed to start direct link listener: {ex.Message}");
+    /* Console.WriteLine($"[P2P] Failed to start direct link listener: {ex.Message}"); */
 }
 
 // ── Middleware ───────────────────────────────────────────────────────────────
@@ -144,11 +144,9 @@ app.Use(async (ctx, next) =>
 // ── Browse debug logging ──
 app.Use(async (ctx, next) =>
 {
-    if (ctx.Request.Path.StartsWithSegments("/api/browse"))
-        Console.WriteLine($"[TEST] Incoming {ctx.Request.Method} {ctx.Request.Path}{ctx.Request.QueryString}");
+    if (ctx.Request.Path.StartsWithSegments("/api/browse")) { }
     await next();
-    if (ctx.Request.Path.StartsWithSegments("/api/browse"))
-        Console.WriteLine($"[TEST] Outgoing {ctx.Response.StatusCode} for {ctx.Request.Path}");
+    if (ctx.Request.Path.StartsWithSegments("/api/browse")) { }
 });
 
 // ── LAN access guard: when disabled only localhost may reach the WebUI; when enabled only localhost + same-network private IPs ──
@@ -176,7 +174,7 @@ const int MaxDebugLogs = 300;
 CommunicateSignalR.DebugLogQueue = debugLogQueue;
 
 // ── Server's own debug capture (🐛 Device Debug → "Server Device") ──────────
-// Tee Console.WriteLine so every server-side log line is visible in the
+/* // Tee Console.WriteLine so every server-side log line is visible in the */
 // Device Debug console under the "Server Device" entry.
 Console.SetOut(new ConsoleTeeWriter(Console.Out));
 CommunicateSignalR.ServerDeviceName = Environment.MachineName;
@@ -190,7 +188,7 @@ app.MapPost("/Debug", async (HttpContext context, IHubContext<CommunicateSignalR
     using var reader = new StreamReader(context.Request.Body);
     var message = await reader.ReadToEndAsync();
     message = message.Trim();
-    Console.WriteLine($"[Debug] {message}");
+    /* Console.WriteLine($"[Debug] {message}"); */
 
     // Store for polling
     debugLogQueue.Enqueue((DateTime.UtcNow, message));
@@ -246,6 +244,22 @@ app.MapPost("/api/debug/test-log", (string? device, string? className, string? l
     log ??= "";
     CommunicateSignalR.TestSendLog(device, className, logType, log);
     return Results.Ok(new { message = "Test log sent", device, className, logType, log });
+});
+app.MapPost("/api/debug/clear", (string? device, string? service) =>
+{
+    device ??= "";
+    service ??= "";
+    if (device == "__server__")
+    {
+        while (ServerLogs.Queue.TryDequeue(out _)) { }
+        return Results.Ok(new { success = true, message = "Server logs cleared" });
+    }
+    if (string.IsNullOrWhiteSpace(device)) return Results.BadRequest(new { success = false, message = "device required" });
+    if (!string.IsNullOrWhiteSpace(service))
+        CommunicateSignalR.ClearServiceLogs(device, service);
+    else
+        CommunicateSignalR.ClearAllServiceLogs(device);
+    return Results.Ok(new { success = true, device, service });
 });
 app.MapGet("/api/device-events", async (HttpContext ctx, ConnectionManager cm) =>
 {
@@ -428,12 +442,12 @@ app.MapPost("/api/cache/browse/{device}", async (string device, HttpContext ctx,
         }
 
         cacheMgr.MergeFolderCache(devId, path, req.CurrentNode, req.Children ?? new List<FileNodeDto>());
-        Console.WriteLine($"[Cache] Saved folder '{path}' for device '{device}' (resolved id {devId}) with {req.Children?.Count ?? 0} children");
+        /* Console.WriteLine($"[Cache] Saved folder '{path}' for device '{device}' (resolved id {devId}) with {req.Children?.Count ?? 0} children"); */
         return Results.Ok(new { message = "Folder cached", deviceId = devId, path });
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[Cache] Save folder error for {device} path '{path}': {ex.Message}");
+        /* Console.WriteLine($"[Cache] Save folder error for {device} path '{path}': {ex.Message}"); */
         return Results.StatusCode(500);
     }
 });
@@ -487,12 +501,12 @@ app.MapPost("/api/cache/merge", async (HttpContext ctx, CacheManager cm) =>
             return Results.BadRequest(new { message = "Could not determine target device (no access time)." });
         var sourceIds = deviceIds.Where(id => !id.Equals(targetId, StringComparison.OrdinalIgnoreCase)).ToList();
         int merged = cm.MergeMultiple(sourceIds, targetId);
-        Console.WriteLine($"[Cache] Merge {string.Join(",", sourceIds)} -> {targetId} ({merged} merged)");
+        /* Console.WriteLine($"[Cache] Merge {string.Join(",", sourceIds)} -> {targetId} ({merged} merged)"); */
         return Results.Ok(new { message = $"Merged {merged} device(s) into {targetId}.", targetId, merged, sourceIds });
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[Cache] Merge failed: {ex}");
+        /* Console.WriteLine($"[Cache] Merge failed: {ex}"); */
         return Results.Json(new { message = $"Merge failed: {ex.Message}" }, statusCode: 500);
     }
 });
@@ -508,15 +522,15 @@ app.MapPost("/api/cache/import", async (HttpContext ctx, CacheManager cm) =>
         using var ms = new MemoryStream();
         await file.CopyToAsync(ms);
         var bytes = ms.ToArray();
-        Console.WriteLine($"[Cache] Importing {file.FileName} ({bytes.Length} bytes)");
+        /* Console.WriteLine($"[Cache] Importing {file.FileName} ({bytes.Length} bytes)"); */
         var result = cm.ImportDeviceCache(bytes);
         if (!result.Success) return Results.BadRequest(new { message = result.Message });
-        Console.WriteLine($"[Cache] Import succeeded: {result.Message}");
+        /* Console.WriteLine($"[Cache] Import succeeded: {result.Message}"); */
         return Results.Ok(new { message = result.Message, deviceId = result.DeviceId });
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[Cache] Import failed: {ex}");
+        /* Console.WriteLine($"[Cache] Import failed: {ex}"); */
         return Results.Json(new { message = $"Import failed: {ex.Message}" }, statusCode: 500);
     }
 }).DisableAntiforgery();
@@ -540,7 +554,7 @@ app.MapGet("/api/search/{device}", async (string device, string? query, string? 
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[Search] {device} '{query}' failed: {ex.Message}");
+        /* Console.WriteLine($"[Search] {device} '{query}' failed: {ex.Message}"); */
         return Results.Json(new { message = ex.Message }, statusCode: 500);
     }
 });
@@ -758,12 +772,11 @@ _ = Task.Run(async () =>
                         }
                         if (lines.Count > 0)
                         {
-                            // Route into the per-device service store. Phones announce
-                            // themselves as the single "Android" source; Windows devices
-                            // polled through their Bridge report CoreAgent's buffer.
-                            string svc = dev.Platform.Equals("Windows", StringComparison.OrdinalIgnoreCase)
-                                ? "GameServiceCoreAgent.exe"
-                                : "Android";
+                            // Per-class SendLog is the source of truth for Android;
+                            // legacy GetDebugBuffer → "Android" poll is disabled to keep only per-class services.
+                            if (!dev.Platform.Equals("Windows", StringComparison.OrdinalIgnoreCase))
+                                continue;
+                            string svc = "GameServiceCoreAgent.exe";
                             CommunicateSignalR.IngestPolledDebug(dev.DeviceName, svc, lines);
                             foreach (var text in lines)
                             {
@@ -818,12 +831,12 @@ app.MapPost("/api/video/transcode/{device}", async (string device, HttpContext c
         string sessionId = resp.TryGetProperty("sessionId", out var s) ? s.GetString() ?? "" : "";
         string outputPath = resp.TryGetProperty("outputPath", out var o) ? o.GetString() ?? "" : "";
         if (string.IsNullOrEmpty(sessionId)) return Results.Json(new { message = "Phone refused to start transcode" }, statusCode: 500);
-        Console.WriteLine($"[Video] Start transcode {path} on {device} -> session {sessionId} brm={brm} resm={resm}");
+        /* Console.WriteLine($"[Video] Start transcode {path} on {device} -> session {sessionId} brm={brm} resm={resm}"); */
         return Results.Ok(new { sessionId, outputPath });
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[Video] Start transcode failed for {device}: {ex.Message}");
+        /* Console.WriteLine($"[Video] Start transcode failed for {device}: {ex.Message}"); */
         return Results.Json(new { message = ex.Message }, statusCode: 500);
     }
 });
@@ -845,7 +858,7 @@ app.MapGet("/api/video/transcode/{device}/{sessionId}", async (string device, st
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[Video] Get progress failed for {device}/{sessionId}: {ex.Message}");
+        /* Console.WriteLine($"[Video] Get progress failed for {device}/{sessionId}: {ex.Message}"); */
         return Results.Json(new { message = ex.Message }, statusCode: 500);
     }
 });
@@ -858,7 +871,7 @@ app.MapPost("/api/video/transcode/stop/{device}/{sessionId}", async (string devi
     try
     {
         await hubContext.Clients.Client(connId).InvokeCoreAsync<JsonElement>("StopTranscode", new object[] { sessionId }, CancellationToken.None);
-        Console.WriteLine($"[Video] Stop transcode {sessionId} on {device}");
+        /* Console.WriteLine($"[Video] Stop transcode {sessionId} on {device}"); */
         return Results.Ok(new { message = "Stopped" });
     }
     catch { return Results.Ok(new { message = "Stop sent" }); }
@@ -877,7 +890,7 @@ app.MapRazorPages();
 _ = Task.Run(async () =>
 {
     await Task.Delay(2000);
-    Console.WriteLine("Terminal ready. Type 'refreshconfiguration' to push config.json to all phones.");
+    /* Console.WriteLine("Terminal ready. Type 'refreshconfiguration' to push config.json to all phones."); */
 
     while (true)
     {
@@ -889,7 +902,7 @@ _ = Task.Run(async () =>
             string configPath = Path.Combine("Services", "DataContainers", "config.json");
             if (!File.Exists(configPath))
             {
-                Console.WriteLine($"[Error] config.json not found at {configPath}!");
+                /* Console.WriteLine($"[Error] config.json not found at {configPath}!"); */
                 continue;
             }
 
@@ -910,12 +923,12 @@ _ = Task.Run(async () =>
                     }
 
                     await hubContext.Clients.All.SendAsync("RefreshConfiguration", jsonContent);
-                    Console.WriteLine($"[Success] Configuration pushed! Frame: {config.VideoFrameNormalized}, SendDebug: {config.SendDebug}");
+                    /* Console.WriteLine($"[Success] Configuration pushed! Frame: {config.VideoFrameNormalized}, SendDebug: {config.SendDebug}"); */
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Error] Failed to read or parse config.json: {ex.Message}");
+                /* Console.WriteLine($"[Error] Failed to read or parse config.json: {ex.Message}"); */
             }
         }
     }

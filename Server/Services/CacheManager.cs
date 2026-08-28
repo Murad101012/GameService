@@ -819,11 +819,11 @@ public class CacheManager
         try
         {
             Directory.Delete(oldDir, true);
-            Console.WriteLine($"[CacheManager] Merged and removed old device cache: {oldDeviceId}");
+            /* Console.WriteLine($"[CacheManager] Merged and removed old device cache: {oldDeviceId}"); */
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[CacheManager] Merge of {oldDeviceId} completed but old directory could not be deleted: {ex.Message}");
+            /* Console.WriteLine($"[CacheManager] Merge of {oldDeviceId} completed but old directory could not be deleted: {ex.Message}"); */
         }
 
         return true;

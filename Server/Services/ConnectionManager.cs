@@ -26,7 +26,7 @@ public class ConnectionManager
         _deviceToIdentityMap[device.DeviceName] = device;
         _connectionToDeviceMap[device.ConnectionId] = device.DeviceName;
         _linkStatusMap[device.DeviceName] = new DeviceLinkStatus { DomainAvailable = true, P2PAvailable = false };
-        Console.WriteLine($"[ConnectionManager] Device mapped: {device.DeviceName} (ID: {device.DeviceId}) -> Connection {device.ConnectionId}");
+        /* Console.WriteLine($"[ConnectionManager] Device mapped: {device.DeviceName} (ID: {device.DeviceId}) -> Connection {device.ConnectionId}"); */
         DevicesChanged?.Invoke(device.DeviceName);
         LinkStatusChanged?.Invoke(device.DeviceName);
     }
@@ -37,7 +37,7 @@ public class ConnectionManager
         {
             _deviceToIdentityMap.TryRemove(deviceName, out _);
             _linkStatusMap.TryRemove(deviceName, out _);
-            Console.WriteLine($"[ConnectionManager] Removed device endpoint: {deviceName}");
+            /* Console.WriteLine($"[ConnectionManager] Removed device endpoint: {deviceName}"); */
             DevicesChanged?.Invoke(deviceName);
             LinkStatusChanged?.Invoke(deviceName);
         }
@@ -75,7 +75,7 @@ public class ConnectionManager
         if (_linkStatusMap.TryGetValue(deviceName, out var status) && status.P2PAvailable != available)
         {
             status.P2PAvailable = available;
-            Console.WriteLine($"[ConnectionManager] P2P link for {deviceName}: {(available ? "available" : "dropped")}");
+            /* Console.WriteLine($"[ConnectionManager] P2P link for {deviceName}: {(available ? "available" : "dropped")}"); */
             LinkStatusChanged?.Invoke(deviceName);
         }
     }

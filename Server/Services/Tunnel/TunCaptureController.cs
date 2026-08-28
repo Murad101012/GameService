@@ -55,7 +55,7 @@ public sealed class TunCaptureController
         string ts = DateTime.Now.ToString("HH:mm:ss");
         _log.Enqueue($"[{ts}] {line}");
         while (_log.Count > 200) _log.TryDequeue(out _);
-        Console.WriteLine($"[Tunnel] {line}");
+        /* Console.WriteLine($"[Tunnel] {line}"); */
     }
 
     // ── Lifecycle ──────────────────────────────────────────────────────────
@@ -457,7 +457,7 @@ public sealed class TunCaptureController
             // Some "del" commands legitimately fail when the route is absent.
             if (!err.Contains("Cannot find device", StringComparison.OrdinalIgnoreCase) &&
                 !err.Contains("RTNETLINK", StringComparison.OrdinalIgnoreCase))
-                Console.WriteLine($"[Tunnel] {program} exited {proc.ExitCode}: {err.Trim()}");
+                { }
         }
     }
 }

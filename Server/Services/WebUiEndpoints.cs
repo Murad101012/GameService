@@ -64,7 +64,7 @@ public static class WebUiEndpoints
                 dcm.SaveDeviceConfig(dev.DeviceId, config);
 
             await hubContext.Clients.All.SendAsync("RefreshConfiguration", json);
-            Console.WriteLine($"[WebUI] Config pushed. Frame={config.VideoFrameNormalized:F2} Debug={config.SendDebug}");
+            /* Console.WriteLine($"[WebUI] Config pushed. Frame={config.VideoFrameNormalized:F2} Debug={config.SendDebug}"); */
 
             return Results.Ok(new { message = "Config pushed", config });
         });
@@ -114,7 +114,7 @@ public static class WebUiEndpoints
 
             string json = JsonSerializer.Serialize(incoming, new JsonSerializerOptions { WriteIndented = true });
             await hubContext.Clients.Client(connId).SendAsync("RefreshConfiguration", json);
-            Console.WriteLine($"[WebUI] Config pushed to single device {device} ({ident.DeviceId}): Frame={incoming.VideoFrameNormalized:F2} Debug={incoming.SendDebug}");
+            /* Console.WriteLine($"[WebUI] Config pushed to single device {device} ({ident.DeviceId}): Frame={incoming.VideoFrameNormalized:F2} Debug={incoming.SendDebug}"); */
 
             return Results.Ok(new { message = $"Config pushed to {device}", config = incoming });
         });
@@ -137,18 +137,18 @@ public static class WebUiEndpoints
         {
             device = Uri.UnescapeDataString(device);
             path ??= "";
-            Console.WriteLine($"[WebUi] Browse {device} path='{path}'");
+            /* Console.WriteLine($"[WebUi] Browse {device} path='{path}'"); */
             if (!cm.TryGetConnectionId(device, out string? connId))
             {
-                Console.WriteLine($"[WebUi] Browse {device} not connected");
+                /* Console.WriteLine($"[WebUi] Browse {device} not connected"); */
                 return Results.NotFound($"Device '{device}' not connected.");
             }
-            Console.WriteLine($"[WebUi] Browse {device} connId={connId} invoking GetPathInfo...");
+            /* Console.WriteLine($"[WebUi] Browse {device} connId={connId} invoking GetPathInfo..."); */
 
             FileNodeResultDto? nodeInfo;
             try
             {
-                Console.WriteLine($"[WebUi] Browse {device} path='{path}' start={startIndex} limit={fileLimit} img={imageOnly} vid={videoOnly} since={sinceDays}");
+                /* Console.WriteLine($"[WebUi] Browse {device} path='{path}' start={startIndex} limit={fileLimit} img={imageOnly} vid={videoOnly} since={sinceDays}"); */
                 // Try new paginated/filtered call first; fallback to old for legacy clients
                 Task<FileNodeResultDto> invokeTask;
                 try
@@ -163,25 +163,25 @@ public static class WebUiEndpoints
                 var completed = await Task.WhenAny(invokeTask, delayTask);
                 if (completed == delayTask)
                 {
-                    Console.WriteLine($"[WebUi] Browse {device} GetPathInfo timeout after 15s");
+                    /* Console.WriteLine($"[WebUi] Browse {device} GetPathInfo timeout after 15s"); */
                     return Results.StatusCode(504);
                 }
                 try { nodeInfo = await invokeTask; }
                 catch (Exception ex) when (ex.Message.Contains("GetPathInfoWithOverride") || ex.Message.Contains("No such method"))
                 {
-                    Console.WriteLine($"[WebUi] Browse {device} WithOverride not supported, fallback to GetPathInfo: {ex.Message}");
+                    /* Console.WriteLine($"[WebUi] Browse {device} WithOverride not supported, fallback to GetPathInfo: {ex.Message}"); */
                     nodeInfo = await hubContext.Clients.Client(connId).InvokeAsync<FileNodeResultDto>("GetPathInfo", path, false, ct);
                 }
-                Console.WriteLine($"[WebUi] Browse {device} GetPathInfo returned exists={nodeInfo?.Exists} children={nodeInfo?.Children?.Count} total={nodeInfo?.TotalFileCount}");
+                /* Console.WriteLine($"[WebUi] Browse {device} GetPathInfo returned exists={nodeInfo?.Exists} children={nodeInfo?.Children?.Count} total={nodeInfo?.TotalFileCount}"); */
             }
             catch (OperationCanceledException)
             {
-                Console.WriteLine($"[WebUi] Browse {device} GetPathInfo canceled");
+                /* Console.WriteLine($"[WebUi] Browse {device} GetPathInfo canceled"); */
                 return Results.StatusCode(499); // Client closed request
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[WebUi] Browse {device} GetPathInfo error: {ex.GetType().Name}: {ex.Message}");
+                /* Console.WriteLine($"[WebUi] Browse {device} GetPathInfo error: {ex.GetType().Name}: {ex.Message}"); */
                 return Results.StatusCode(500);
             }
 
@@ -475,7 +475,7 @@ public static class WebUiEndpoints
             catch (OperationCanceledException) { /* client disconnected */ }
             catch (Exception ex)
             {
-                Console.WriteLine($"[WebUI /api/file] Error: {ex.Message}");
+                /* Console.WriteLine($"[WebUI /api/file] Error: {ex.Message}"); */
                 if (!ctx.Response.HasStarted)
                     ctx.Response.StatusCode = 500;
                 else
@@ -563,7 +563,7 @@ public static class WebUiEndpoints
             catch (OperationCanceledException) { /* browser cancelled */ }
             catch (Exception ex)
             {
-                Console.WriteLine($"[WebUI /api/download-zip] Error: {ex.Message}");
+                /* Console.WriteLine($"[WebUI /api/download-zip] Error: {ex.Message}"); */
                 if (!ctx.Response.HasStarted)
                     ctx.Response.StatusCode = 500;
             }

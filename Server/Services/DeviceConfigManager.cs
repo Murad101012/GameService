@@ -78,11 +78,11 @@ public class DeviceConfigManager
             string path = GetDeviceConfigPath(deviceId);
             string json = JsonSerializer.Serialize(config, JsonOptions);
             File.WriteAllText(path, json);
-            Console.WriteLine($"[DeviceConfigManager] Saved config for device {deviceId}: Frame={config.VideoFrameNormalized:F2}, ThumbQ={config.ThumbnailQuality:F2}, VidQ={config.VideoQuality:F2}");
+            /* Console.WriteLine($"[DeviceConfigManager] Saved config for device {deviceId}: Frame={config.VideoFrameNormalized:F2}, ThumbQ={config.ThumbnailQuality:F2}, VidQ={config.VideoQuality:F2}"); */
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[DeviceConfigManager] Failed to save device config for {deviceId}: {ex.Message}");
+            /* Console.WriteLine($"[DeviceConfigManager] Failed to save device config for {deviceId}: {ex.Message}"); */
         }
     }
 
@@ -103,7 +103,7 @@ public class DeviceConfigManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[DeviceConfigManager] Failed to load device config for {deviceId}: {ex.Message}");
+            /* Console.WriteLine($"[DeviceConfigManager] Failed to load device config for {deviceId}: {ex.Message}"); */
             return null;
         }
     }
@@ -168,7 +168,7 @@ public class DeviceConfigManager
 
         if (updatedCount > 0)
         {
-            Console.WriteLine($"[DeviceConfigManager] Updated {updatedCount} device config(s) to Frame={config.VideoFrameNormalized:F2}, ThumbQ={config.ThumbnailQuality:F2}, VidQ={config.VideoQuality:F2}");
+            /* Console.WriteLine($"[DeviceConfigManager] Updated {updatedCount} device config(s) to Frame={config.VideoFrameNormalized:F2}, ThumbQ={config.ThumbnailQuality:F2}, VidQ={config.VideoQuality:F2}"); */
         }
     }
 

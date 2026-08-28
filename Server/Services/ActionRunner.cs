@@ -272,7 +272,7 @@ public class ActionRunner
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            Console.WriteLine($"[RunNotifier] Loop error: {ex.Message}");
+            /* Console.WriteLine($"[RunNotifier] Loop error: {ex.Message}"); */
         }
     }
 

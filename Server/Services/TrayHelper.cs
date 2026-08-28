@@ -55,7 +55,7 @@ public static class TrayHelper
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Tray] Failed to start system tray icon: {ex.Message}");
+            /* Console.WriteLine($"[Tray] Failed to start system tray icon: {ex.Message}"); */
             return -1;
         }
     }
@@ -79,8 +79,7 @@ public static class TrayHelper
                     if (!alive)
                     {
                         int fresh = Spawn(app);
-                        if (fresh > 0)
-                            Console.WriteLine($"[Tray] Tray process had died (was pid {pid}); respawned as pid {fresh}.");
+                        if (fresh > 0) { }
                     }
                 }
                 catch (TaskCanceledException)
@@ -89,7 +88,7 @@ public static class TrayHelper
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[Tray] Monitor error: {ex.Message}");
+                    /* Console.WriteLine($"[Tray] Monitor error: {ex.Message}"); */
                 }
             }
         });
@@ -249,7 +248,7 @@ public static class TrayHelper
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[SessionEnv] Could not infer session environment: {ex.Message}");
+            /* Console.WriteLine($"[SessionEnv] Could not infer session environment: {ex.Message}"); */
         }
     }
 

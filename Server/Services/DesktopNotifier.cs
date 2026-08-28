@@ -17,21 +17,21 @@ public static class DesktopNotifier
             if (OperatingSystem.IsWindows())
             {
                 ShowWindowsToast(title, message);
-                Console.WriteLine($"[DesktopNotifier] Notified: {title} — {message}");
+                /* Console.WriteLine($"[DesktopNotifier] Notified: {title} — {message}"); */
             }
             else if (OperatingSystem.IsLinux())
             {
                 ShowLinuxNotify(title, message);
-                Console.WriteLine($"[DesktopNotifier] Notified: {title} — {message}");
+                /* Console.WriteLine($"[DesktopNotifier] Notified: {title} — {message}"); */
             }
             else
             {
-                Console.WriteLine($"[DesktopNotifier] Unsupported OS, skipped: {title} — {message}");
+                /* Console.WriteLine($"[DesktopNotifier] Unsupported OS, skipped: {title} — {message}"); */
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[DesktopNotifier] Failed to show notification: {ex.Message}");
+            /* Console.WriteLine($"[DesktopNotifier] Failed to show notification: {ex.Message}"); */
         }
     }
 

@@ -55,7 +55,7 @@ public sealed class Socks5ProxyServer
 
         BoundPort = port;
         IsRunning = true;
-        Console.WriteLine($"[Tunnel] SOCKS5 proxy listening on 127.0.0.1:{port}");
+        /* Console.WriteLine($"[Tunnel] SOCKS5 proxy listening on 127.0.0.1:{port}"); */
         _loop = Task.Run(() => AcceptLoopAsync(_listener!, _cts.Token));
     }
 
@@ -65,7 +65,7 @@ public sealed class Socks5ProxyServer
         IsRunning = false;
         _cts?.Cancel();
         try { _listener?.Stop(); } catch { }
-        Console.WriteLine("[Tunnel] SOCKS5 proxy stopped.");
+        /* Console.WriteLine("[Tunnel] SOCKS5 proxy stopped."); */
     }
 
     private async Task AcceptLoopAsync(TcpListener listener, CancellationToken ct)
@@ -143,7 +143,7 @@ public sealed class Socks5ProxyServer
                 else if (command == 0x03) await HandleUdpAssociateAsync(tcp, net, ct);
                 else await ReplyAsync(net, 0x07, ct); // command not supported
             }
-            catch (Exception ex) { Console.WriteLine($"[Tunnel] socks client error: {ex.Message}"); }
+            catch (Exception ex) { /*Console.WriteLine($"[Tunnel] socks client error: {ex.Message}"); */ }
         }
     }
 
@@ -264,7 +264,7 @@ public sealed class Socks5ProxyServer
         try { all = _tunnels.GetConnectedDevices(); }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Tunnel][socks] ResolveDevice exc: {ex.Message}");
+            /* Console.WriteLine($"[Tunnel][socks] ResolveDevice exc: {ex.Message}"); */
             return null;
         }
         if (all.Count == 0) return null;

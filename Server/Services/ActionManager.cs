@@ -66,7 +66,7 @@ public class ActionManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Action] Failed to load runs.json: {ex.Message}");
+            /* Console.WriteLine($"[Action] Failed to load runs.json: {ex.Message}"); */
         }
     }
 
@@ -86,7 +86,7 @@ public class ActionManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Action] Failed to save runs.json: {ex.Message}");
+            /* Console.WriteLine($"[Action] Failed to save runs.json: {ex.Message}"); */
         }
     }
 
@@ -105,7 +105,7 @@ public class ActionManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Action] Failed to save runs.json: {ex.Message}");
+            /* Console.WriteLine($"[Action] Failed to save runs.json: {ex.Message}"); */
         }
     }
 
@@ -132,7 +132,7 @@ public class ActionManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Action] Failed to load actions.json: {ex.Message}");
+            /* Console.WriteLine($"[Action] Failed to load actions.json: {ex.Message}"); */
         }
     }
 
@@ -145,7 +145,7 @@ public class ActionManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Action] Failed to save actions.json: {ex.Message}");
+            /* Console.WriteLine($"[Action] Failed to save actions.json: {ex.Message}"); */
         }
     }
 
@@ -313,7 +313,7 @@ public class ActionRunState
             _log.Add(new ActionLogLine { TimeUtc = DateTime.UtcNow, Message = message });
             if (_log.Count > 500) _log.RemoveRange(0, _log.Count - 500);
         }
-        Console.WriteLine($"[Action] {message}");
+        /* Console.WriteLine($"[Action] {message}"); */
     }
 
     public List<ActionLogLine> GetLog()

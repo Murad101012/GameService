@@ -125,7 +125,7 @@ public class SettingsManager
             Save();
         }
         SyncKestrelConfig(port);
-        Console.WriteLine($"[Settings] Port changed to {port} — restarting the server...");
+        /* Console.WriteLine($"[Settings] Port changed to {port} — restarting the server..."); */
 
         _ = Task.Run(async () =>
         {
@@ -140,7 +140,7 @@ public class SettingsManager
             }
             catch { }
             try { StartSelf(); }
-            catch (Exception ex) { Console.WriteLine($"[Settings] Failed to restart server: {ex.Message}"); }
+            catch (Exception ex) { /*Console.WriteLine($"[Settings] Failed to restart server: {ex.Message}"); */ }
             Environment.Exit(0);
         });
     }
@@ -155,7 +155,7 @@ public class SettingsManager
             Save();
         }
         SyncKestrelConfig(port, allowLanAccess);
-        Console.WriteLine($"[Settings] Port {port}, LAN {(allowLanAccess ? "enabled" : "disabled")} — restarting the server...");
+        /* Console.WriteLine($"[Settings] Port {port}, LAN {(allowLanAccess ? "enabled" : "disabled")} — restarting the server..."); */
 
         _ = Task.Run(async () =>
         {
@@ -170,7 +170,7 @@ public class SettingsManager
             }
             catch { }
             try { StartSelf(); }
-            catch (Exception ex) { Console.WriteLine($"[Settings] Failed to restart server: {ex.Message}"); }
+            catch (Exception ex) { /*Console.WriteLine($"[Settings] Failed to restart server: {ex.Message}"); */ }
             Environment.Exit(0);
         });
     }
@@ -216,7 +216,7 @@ public class SettingsManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Settings] Failed to read port: {ex.Message}");
+            /* Console.WriteLine($"[Settings] Failed to read port: {ex.Message}"); */
         }
         return 8052;
     }
@@ -233,7 +233,7 @@ public class SettingsManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Settings] Failed to read AllowLanAccess: {ex.Message}");
+            /* Console.WriteLine($"[Settings] Failed to read AllowLanAccess: {ex.Message}"); */
         }
         return false;
     }
@@ -253,7 +253,7 @@ public class SettingsManager
         string url = $"http://{host}:{Math.Clamp(port, 1, 65535)}";
         WriteJsonValue(BaseConfigPath, "Kestrel:Endpoints:Http:Url", url);
         WriteJsonValue(DevConfigPath, "Kestrel:Endpoints:Http:Url", url);
-        Console.WriteLine($"[Settings] Kestrel listening URL set to {url} (LAN {(allowLanAccess ? "enabled" : "disabled")})");
+        /* Console.WriteLine($"[Settings] Kestrel listening URL set to {url} (LAN {(allowLanAccess ? "enabled" : "disabled")})"); */
     }
 
     public static List<string> GetLocalLanUrls(int port)
@@ -339,7 +339,7 @@ public class SettingsManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Settings] Failed to write {jsonPath} in {filePath}: {ex.Message}");
+            /* Console.WriteLine($"[Settings] Failed to write {jsonPath} in {filePath}: {ex.Message}"); */
         }
     }
 
@@ -355,7 +355,7 @@ public class SettingsManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Settings] Failed to load appsettings.json: {ex.Message}");
+            /* Console.WriteLine($"[Settings] Failed to load appsettings.json: {ex.Message}"); */
         }
         return new AppSettings();
     }
@@ -373,7 +373,7 @@ public class SettingsManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Settings] Failed to save appsettings.json: {ex.Message}");
+            /* Console.WriteLine($"[Settings] Failed to save appsettings.json: {ex.Message}"); */
         }
     }
 }

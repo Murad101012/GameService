@@ -46,11 +46,11 @@ public class P2pManager
         try
         {
             _listener.Start();
-            Console.WriteLine($"[P2P] Listening for direct phone connections on 0.0.0.0:{DefaultPort}");
+            /* Console.WriteLine($"[P2P] Listening for direct phone connections on 0.0.0.0:{DefaultPort}"); */
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[P2P] Failed to bind listener on port {DefaultPort}: {ex.Message}");
+            /* Console.WriteLine($"[P2P] Failed to bind listener on port {DefaultPort}: {ex.Message}"); */
             return;
         }
 
@@ -153,14 +153,14 @@ public class P2pManager
             var session = new P2pSession(identity.DeviceName, client, stream);
             _sessionsByDevice[identity.DeviceName] = session;
             _connectionManager.SetP2PAvailable(identity.DeviceName, true);
-            Console.WriteLine($"[P2P] Verified direct link with {identity.DeviceName} on {client.Client.RemoteEndPoint}");
+            /* Console.WriteLine($"[P2P] Verified direct link with {identity.DeviceName} on {client.Client.RemoteEndPoint}"); */
 
             // ── Single reader: dispatches heartbeats + chunk responses ──
             await ReadDispatchLoopAsync(session);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[P2P] Session error: {ex.Message}");
+            /* Console.WriteLine($"[P2P] Session error: {ex.Message}"); */
         }
         finally
         {
@@ -169,7 +169,7 @@ public class P2pManager
             {
                 _sessionsByDevice.TryRemove(doomed.Key, out _);
                 _connectionManager.SetP2PAvailable(doomed.Key, false);
-                Console.WriteLine($"[P2P] Direct link with {doomed.Key} closed.");
+                /* Console.WriteLine($"[P2P] Direct link with {doomed.Key} closed."); */
             }
             foreach (var tcs in _pendingRequests.Values) tcs.TrySetResult(null);
             _pendingRequests.Clear();
@@ -212,7 +212,7 @@ public class P2pManager
                         if (n == 0) throw new IOException("P2P stream closed mid-payload");
                         read += n;
                     }
-                    Console.WriteLine($"[P2P] Chunk served over direct link ({len} bytes, req {reqId})");
+                    /* Console.WriteLine($"[P2P] Chunk served over direct link ({len} bytes, req {reqId})"); */
                     CompleteRequest(reqId, payload);
                 }
                 continue;
@@ -259,7 +259,7 @@ public class P2pManager
             await session.WriteLineAsync(cmd);
             using var reg = ct.Register(() => tcs.TrySetResult(null));
             var result = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(60), ct);
-            Console.WriteLine($"[P2P] Chunk request {reqId} for {path} @{offset}: {(result == null ? "FAILED" : $"{result.Length}b over direct link")}");
+            /* Console.WriteLine($"[P2P] Chunk request {reqId} for {path} @{offset}: {(result == null ? "FAILED" : $"{result.Length}b over direct link")}"); */
             return result;
         }
         catch
@@ -287,7 +287,7 @@ public class P2pManager
             {
                 if (kv.Value.IsStale)
                 {
-                    Console.WriteLine($"[P2P] Direct link with {kv.Key} is stale — dropping.");
+                    /* Console.WriteLine($"[P2P] Direct link with {kv.Key} is stale — dropping."); */
                     kv.Value.Dispose();
                 }
             }
