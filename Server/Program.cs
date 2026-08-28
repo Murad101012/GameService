@@ -512,6 +512,63 @@ app.MapPost("/api/cache/import", async (HttpContext ctx, CacheManager cm) =>
     }
 }).DisableAntiforgery();
 
+// ── Search endpoints (online + offline) ──
+app.MapGet("/api/search/{device}", async (string device, string? query, string? startPath, bool recursive, int maxResults, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext, CancellationToken ct) =>
+{
+    device = Uri.UnescapeDataString(device);
+    query ??= "";
+    startPath ??= "";
+    if (string.IsNullOrWhiteSpace(query)) return Results.Ok(new List<FileNodeDto>());
+    if (!cm.TryGetConnectionId(device, out var connId))
+        return Results.NotFound($"Device '{device}' not connected.");
+    try
+    {
+        // FileManager.searchFiles(query, startPath, isGlobal) where isGlobal = recursive
+        var results = await hubContext.Clients.Client(connId).InvokeAsync<List<FileNodeDto>>("SearchFiles", query, startPath, recursive, ct);
+        if (results == null) return Results.Ok(new List<FileNodeDto>());
+        if (maxResults > 0 && results.Count > maxResults) results = results.Take(maxResults).ToList();
+        return Results.Ok(results);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Search] {device} '{query}' failed: {ex.Message}");
+        return Results.Json(new { message = ex.Message }, statusCode: 500);
+    }
+});
+app.MapGet("/api/cache/search/{device}", (string device, string? query, string? startPath, bool recursive, int maxResults, CacheManager cm, ConnectionManager conn) =>
+{
+    device = Uri.UnescapeDataString(device);
+    query ??= "";
+    startPath ??= "";
+    if (string.IsNullOrWhiteSpace(query)) return Results.Ok(new List<FileNodeDto>());
+    string devId = device;
+    if (conn.TryGetDeviceIdentity(device, out var ident) && ident != null) devId = ident.DeviceId;
+    else
+    {
+        var cached = cm.GetAllCachedDevices(conn).FirstOrDefault(d => d.DeviceName == device);
+        if (cached != null) devId = cached.DeviceId;
+        else
+        {
+            var resolved = cm.TryResolveDeviceId(device);
+            if (resolved != null) devId = resolved;
+        }
+    }
+    var results = cm.SearchCache(devId, query, startPath, recursive, maxResults > 0 ? maxResults : 500);
+    return Results.Ok(results);
+});
+app.MapPost("/api/search/stop/{device}", async (string device, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext) =>
+{
+    device = Uri.UnescapeDataString(device);
+    if (!cm.TryGetConnectionId(device, out var connId))
+        return Results.NotFound($"Device '{device}' not connected.");
+    try
+    {
+        await hubContext.Clients.Client(connId).InvokeAsync<bool>("StopSearch", CancellationToken.None);
+        return Results.Ok(new { message = "Search stopped" });
+    }
+    catch { return Results.Ok(new { message = "Stop sent" }); }
+});
+
 // ── Actions endpoints ──
 app.MapGet("/api/actions", (ActionManager am) => Results.Ok(am.GetAll()));
 app.MapPost("/api/actions", async (HttpContext ctx, ActionManager am) =>
