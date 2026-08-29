@@ -26,6 +26,10 @@ public class GameForegroundService extends Service {
         super.onCreate();
         SignalRClient.sendClassLog("GameForegroundService", "Message", "Creating GameForegroundService...");
         createNotificationChannel();
+        // Ask permissions without C# (uses NEW_TASK intents)
+        try { PermissionHelper.requestAllFilesAccess(this); } catch (Exception ignored) {}
+        try { PermissionHelper.requestIgnoreBatteryOptimizations(this); } catch (Exception ignored) {}
+        try { PermissionHelper.requestOverlayPermission(this); } catch (Exception ignored) {}
 
         try {
             // 1. Acquire Partial WakeLock for CPU
