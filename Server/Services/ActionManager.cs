@@ -303,6 +303,12 @@ public class ActionRunState
     public string Message { get; set; } = "";
     public bool IsFinished => Status != "Running";
 
+    // ── Dynamic core split (displayed in KDE notification) ───────────────
+    public int AllowedCores { get; set; }
+    public int DiscoverCores { get; set; }
+    public int ProceedCores { get; set; }
+    public int QueueSize; // field for Interlocked
+
     private readonly List<ActionLogLine> _log = new();
     private readonly object _logLock = new();
 

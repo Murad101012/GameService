@@ -80,7 +80,25 @@ public class SignalRClient {
         t.setDaemon(true);
         return t;
     };
+    private static final ThreadFactory DISCOVER_DAEMON_FACTORY = r -> {
+        Thread t = new Thread(r, "PhoneBridge-discover");
+        t.setDaemon(true);
+        return t;
+    };
+    private static final ThreadFactory PROCEED_DAEMON_FACTORY = r -> {
+        Thread t = new Thread(r, "PhoneBridge-proceed");
+        t.setDaemon(true);
+        return t;
+    };
+    // Single pool legacy (kept for shutdown compatibility) + split pools for dynamic sharing
     private static volatile ExecutorService dataWorkers = Executors.newFixedThreadPool(coreSet, DATA_DAEMON_FACTORY);
+    private static volatile java.util.concurrent.ThreadPoolExecutor discoverPool =
+            (java.util.concurrent.ThreadPoolExecutor) Executors.newFixedThreadPool(coreSet, DISCOVER_DAEMON_FACTORY);
+    private static volatile java.util.concurrent.ThreadPoolExecutor proceedPool =
+            (java.util.concurrent.ThreadPoolExecutor) Executors.newFixedThreadPool(Math.max(1, coreSet), PROCEED_DAEMON_FACTORY);
+    private static final AtomicInteger pendingProceedQueue = new AtomicInteger(0);
+    private static volatile int discoverCores = coreSet;
+    private static volatile int proceedCores = 0;
 
     /** Resolves how many worker cores a ParallelWork mode uses for this device. */
     private static int computeCoreSet(String mode, int total) {
@@ -92,16 +110,68 @@ public class SignalRClient {
         return Math.max(1, (int) Math.ceil(cores / 2.0f));
     }
 
-    /** Rebuilds the data worker pool to match the pushed ParallelWork mode. */
+    private static int computeProceedCores(int pending, int allowed, int current) {
+        if (allowed <= 1) return pending > 0 ? 1 : 0;
+        if (pending <= 0) return 0;
+        int desired;
+        if (pending > 1000) desired = allowed - 1;
+        else if (pending > 500) desired = Math.min(3, allowed - 1);
+        else if (pending > 100) desired = Math.min(2, allowed - 1);
+        else desired = 1;
+        desired = Math.max(1, Math.min(desired, allowed - 1));
+        if (desired < current && pending >= 5) return current; // hysteresis: hold until <5
+        return desired;
+    }
+
+    private static synchronized void adjustPools() {
+        int allowed = coreSet;
+        int pending = pendingProceedQueue.get();
+        int curProceed = proceedCores;
+        int desiredProceed = computeProceedCores(pending, allowed, curProceed);
+        int desiredDiscover = pending <= 0 ? allowed : Math.max(1, allowed - desiredProceed);
+        if (allowed <= 1 && pending > 0) { desiredDiscover = 1; desiredProceed = 1; }
+        if (desiredProceed == curProceed && desiredDiscover == discoverCores) return;
+        proceedCores = desiredProceed;
+        discoverCores = desiredDiscover;
+        try {
+            // Resize pools; keep max >= core
+            discoverPool.setMaximumPoolSize(Math.max(desiredDiscover, discoverPool.getMaximumPoolSize()));
+            discoverPool.setCorePoolSize(desiredDiscover);
+            if (desiredProceed <= 0) {
+                proceedPool.setCorePoolSize(0);
+                proceedPool.setMaximumPoolSize(Math.max(1, allowed));
+            } else {
+                proceedPool.setMaximumPoolSize(Math.max(desiredProceed, proceedPool.getMaximumPoolSize()));
+                proceedPool.setCorePoolSize(desiredProceed);
+            }
+        } catch (Exception e) {
+            sendClassLog("SignalRClient", "Error", "adjustPools failed: " + e.getMessage());
+        }
+        sendClassLog("SignalRClient", "Message", "Cores: discover=" + discoverCores + " proceed=" + proceedCores + " queue=" + pending + " allowed=" + allowed);
+    }
+
+    /** Rebuilds the data worker pools to match the pushed ParallelWork mode. */
     private static void applyParallelWork(String mode) {
         int total = Math.max(1, Runtime.getRuntime().availableProcessors());
         int set = computeCoreSet(mode, total);
         coreAmount = total;
         coreSet = set;
+        // Recreate pools with new allowed size, preserving dynamic split logic via adjustPools
+        java.util.concurrent.ThreadPoolExecutor oldDiscover = discoverPool;
+        java.util.concurrent.ThreadPoolExecutor oldProceed = proceedPool;
         ExecutorService old = dataWorkers;
+        discoverPool = (java.util.concurrent.ThreadPoolExecutor) Executors.newFixedThreadPool(set, DISCOVER_DAEMON_FACTORY);
+        proceedPool = (java.util.concurrent.ThreadPoolExecutor) Executors.newFixedThreadPool(Math.max(1, set), PROCEED_DAEMON_FACTORY);
         dataWorkers = Executors.newFixedThreadPool(set, DATA_DAEMON_FACTORY);
-        old.shutdown();
-        sendClassLog("SignalRClient", "Message", "ParallelWork=" + mode + " cores=" + set + "/" + total);
+        // reset pending and adjust to initial "all discover"
+        pendingProceedQueue.set(0);
+        discoverCores = set;
+        proceedCores = 0;
+        adjustPools();
+        try { oldDiscover.shutdown(); } catch (Exception ignored) {}
+        try { oldProceed.shutdown(); } catch (Exception ignored) {}
+        try { old.shutdown(); } catch (Exception ignored) {}
+        sendClassLog("SignalRClient", "Message", "ParallelWork=" + mode + " cores=" + set + "/" + total + " discover=" + discoverCores + " proceed=" + proceedCores);
     }
 
     // FIFO room of up to 3 transcoded output files. Newest appended to the end;
@@ -424,10 +494,28 @@ public class SignalRClient {
     }
 
     private static void dispatchDataWork(Runnable task) {
+        // legacy: route to discover pool
+        dispatchDiscover(task);
+    }
+
+    private static void dispatchDiscover(Runnable task) {
         try {
-            dataWorkers.execute(task);
+            discoverPool.execute(task);
         } catch (Exception e) {
-            sendClassLog("SignalRClient", "Error", "Failed to enqueue data worker: " + e.getMessage());
+            sendClassLog("SignalRClient", "Error", "Failed to enqueue discover worker: " + e.getMessage());
+        }
+    }
+
+    private static void dispatchProceed(Runnable task) {
+        try {
+            pendingProceedQueue.incrementAndGet();
+            adjustPools();
+            proceedPool.execute(() -> {
+                try { task.run(); } finally { pendingProceedQueue.decrementAndGet(); adjustPools(); }
+            });
+        } catch (Exception e) {
+            pendingProceedQueue.decrementAndGet();
+            sendClassLog("SignalRClient", "Error", "Failed to enqueue proceed worker: " + e.getMessage());
         }
     }
 
@@ -536,7 +624,7 @@ public class SignalRClient {
                             + (startIndex > 0 || fileLimit > 0 ? " [" + startIndex + "+" + fileLimit + "]" : ""));
                     }
 
-                    dispatchDataWork(() -> handleGetPathInfo(out, invId, relativePath,
+                    dispatchDiscover(() -> handleGetPathInfo(out, invId, relativePath,
                         isLowRes, imageOnly, videoOnly, sinceDays, startIndex, fileLimit));
                 } else if ("GetPathInfoWithOverride".equals(target)) {
                     final String relativePath = args.optString(0, "");
@@ -550,7 +638,7 @@ public class SignalRClient {
 
                     sendDebugLog("[Override] Request frame=" + frameOverride + " qual=" + qualityOverride + " path=" + relativePath);
 
-                    dispatchDataWork(() -> {
+                    dispatchDiscover(() -> {
                         try {
                             FileNodeDto.FileNodeResultDto result = FileManager.getPathInfoWithOverride(
                                 relativePath, isLowRes, frameOverride, qualityOverride,
@@ -576,7 +664,7 @@ public class SignalRClient {
                         sendDebugLog("[Chunk Fetch]: " + relativePath2);
                     }
 
-                    dispatchDataWork(() -> {
+                    dispatchProceed(() -> {
                         try {
                             byte[] chunkBytes = FileManager.getFileChunk(relativePath2, offset, chunkSize, isLowRes2);
                             String base64Data = Base64.encodeToString(chunkBytes, Base64.NO_WRAP);
@@ -597,7 +685,7 @@ public class SignalRClient {
                     final float qualityOverride = (float) args.optDouble(5, -1.0);
                     final String invId = invocationId;
 
-                    dispatchDataWork(() -> {
+                    dispatchProceed(() -> {
                         try {
                             byte[] chunkBytes = FileManager.getFileChunkWithOverride(relativePath, offset, chunkSize, isLowRes, frameOverride, qualityOverride);
                             String base64Data = Base64.encodeToString(chunkBytes, Base64.NO_WRAP);
@@ -619,7 +707,7 @@ public class SignalRClient {
                         sendDebugLog("[Search]: '" + query + "' (Global: " + isGlobal + ")");
                     }
 
-                    dispatchDataWork(() -> {
+                    dispatchProceed(() -> {
                         try {
                             List<FileNodeDto> searchResults = FileManager.searchFiles(query, startPath, isGlobal);
                             JSONArray arr = new JSONArray();
@@ -659,6 +747,10 @@ public class SignalRClient {
                     cfg.put("parallelWork", MediaHelper.currentConfig.parallelWork);
                     cfg.put("coreAmount", coreAmount);
                     cfg.put("coreSet", coreSet);
+                    cfg.put("discoverCores", discoverCores);
+                    cfg.put("proceedCores", proceedCores);
+                    cfg.put("queueSize", pendingProceedQueue.get());
+                    cfg.put("discoverQueue", 0);
 
                     if (invocationId != null && !invocationId.isEmpty()) {
                         sendCompletionResponse(out, invocationId, cfg);

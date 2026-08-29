@@ -112,19 +112,28 @@ public sealed class RunNotifier
                 _lastTick = now;
 
                 string info = run.DiscoveredFiles > 0
-                    ? $"Discovered: {run.DiscoveredFiles} · Fetched: {run.FetchedFiles} · Skipped: {run.SkippedFiles} · Failed: {run.FailedFiles}"
+                    ? $"Discovered: {run.DiscoveredFiles} · Fetched: {run.FetchedFiles} · Skipped: {run.SkippedFiles} · Failed: {run.FailedFiles} · Queue: {run.QueueSize}"
                     : "Fetching…";
+
+                // Dynamic core split display (rules: allowed total, discover vs proceed + queue)
+                string coreInfo = run.AllowedCores > 0
+                    ? $"Cores: {run.DiscoverCores} discover / {run.ProceedCores} proceed (allowed {run.AllowedCores}, queue {run.QueueSize})"
+                    : $"Cores: queue {run.QueueSize}";
 
                 var msg = new
                 {
                     title = $"{_actionName} — {FormatSpeed(mbps)}",
-                    info,
+                    info = $"{info} · {coreInfo}",
                     percent = (int)(progress * 100),
                     speed = (long)Math.Max(0, bytes),
                     l1 = "Progress",
                     v1 = $"{progress * 100:F0}%",
                     l2 = "Speed",
-                    v2 = FormatSpeed(mbps)
+                    v2 = FormatSpeed(mbps),
+                    l3 = "Cores",
+                    v3 = $"{run.DiscoverCores} discover / {run.ProceedCores} proceed",
+                    l4 = "Queue",
+                    v4 = $"{run.QueueSize} (allowed {run.AllowedCores})"
                 };
                 _writer.WriteLine(JsonSerializer.Serialize(msg, _jsonOptions));
             }

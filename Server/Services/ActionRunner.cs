@@ -45,6 +45,28 @@ public class ActionRunner
         public bool IsThumb { get; init; }
     }
 
+    // ── Dynamic core split (rules from user) ─────────────────────────────
+    // allowed = coreSet from phone (based on ParallelWork). pending = image+heavy queue size.
+    // 1) queue==0 -> all to discover (proceed=0)
+    // 2) queue>0  -> 1 proceed
+    // 3) queue>100 -> 2 proceed, >500 -> 3 proceed, >1000 -> allowed-1 proceed
+    // * always at least 1 discover
+    // * increase immediately, decrease only when queue<5 (hysteresis) -> reset to 1 (or 0 if empty)
+    private static int ComputeProceedCores(int pending, int allowed, int currentProceed)
+    {
+        if (allowed <= 1) return pending > 0 ? 1 : 0;
+        if (pending <= 0) return 0;
+        int desired;
+        if (pending > 1000) desired = allowed - 1;
+        else if (pending > 500) desired = Math.Min(3, allowed - 1);
+        else if (pending > 100) desired = Math.Min(2, allowed - 1);
+        else desired = 1;
+        desired = Math.Clamp(desired, 1, allowed - 1);
+        // Hysteresis: hold high allocation until queue <5
+        if (desired < currentProceed && pending >= 5) return currentProceed;
+        return desired;
+    }
+
     public async Task RunAsync(ActionEntry action, DeviceIdentity device, ActionRunState run)
     {
         using var runCts = new CancellationTokenSource(TimeSpan.FromHours(4));
@@ -79,6 +101,28 @@ public class ActionRunner
 
             Configuration cfg = ResolveConfig(action, device.DeviceId);
             string deviceId = device.DeviceId;
+
+            // ── Dynamic core split: fetch allowed cores from phone (coreSet) ──
+            int allowed = await GetAllowedCoresAsync(connId, cfg.ParallelWork, runCts.Token);
+            if (allowed <= 0) allowed = Math.Max(1, Environment.ProcessorCount);
+            int currentProceed = 0;
+            // initially all to discover
+            run.AllowedCores = allowed;
+            run.DiscoverCores = allowed;
+            run.ProceedCores = 0;
+            Volatile.Write(ref run.QueueSize, 0);
+            void UpdateCoreSplit()
+            {
+                int p = Volatile.Read(ref run.QueueSize);
+                int desiredProceed = ComputeProceedCores(p, allowed, Volatile.Read(ref currentProceed));
+                int prev = Volatile.Read(ref currentProceed);
+                if (desiredProceed == prev) return;
+                Volatile.Write(ref currentProceed, desiredProceed);
+                run.ProceedCores = desiredProceed;
+                run.DiscoverCores = p <= 0 ? allowed : Math.Max(1, allowed - desiredProceed);
+                if (allowed <= 1 && p > 0) { run.DiscoverCores = 1; run.ProceedCores = 1; }
+                run.AppendLog($"Cores: discover={run.DiscoverCores} proceed={run.ProceedCores} queue={p} allowed={allowed}");
+            }
 
             // "Fetch the Files" actions may be bound to one device only.
             if (!string.IsNullOrEmpty(action.DeviceId)
@@ -164,33 +208,56 @@ public class ActionRunner
             int imgWorkers = ResolveWorkerCount(imgMode, action.ImageConcurrency, DefaultImageWorkers);
             int hvyWorkers = ResolveWorkerCount(hvyMode, action.HeavyConcurrency, DefaultHeavyWorkers);
 
+            // Dynamic proceed limiter (enforces proceedCores concurrency)
+            int concurrentProceed = 0;
+            async Task WaitProceedSlot(CancellationToken c)
+            {
+                while (!c.IsCancellationRequested)
+                {
+                    int limit = Volatile.Read(ref currentProceed);
+                    if (limit <= 0) { await Task.Delay(50, c); continue; }
+                    int cur = Volatile.Read(ref concurrentProceed);
+                    if (cur < limit) break;
+                    await Task.Delay(20, c);
+                }
+            }
+
+            // Wrappers that enforce proceed limit and decrement pending (run.QueueSize holds pending)
+            async Task ProcessThumbLimited(WorkItem item)
+            {
+                await WaitProceedSlot(runCts.Token);
+                Interlocked.Increment(ref concurrentProceed);
+                try { await ProcessThumbnailAsync(run, connId, deviceId, item, cfg.VideoFrameNormalized, cfg.ThumbnailQuality, runCts.Token); }
+                finally { Interlocked.Decrement(ref concurrentProceed); Interlocked.Decrement(ref run.QueueSize); UpdateCoreSplit(); }
+            }
+            async Task ProcessHeavyLimited(WorkItem item)
+            {
+                await WaitProceedSlot(runCts.Token);
+                Interlocked.Increment(ref concurrentProceed);
+                try { await ProcessHeavyAsync(run, connId, deviceId, item, cfg, runCts.Token); }
+                finally { Interlocked.Decrement(ref concurrentProceed); Interlocked.Decrement(ref run.QueueSize); UpdateCoreSplit(); }
+            }
+
             var workers = new List<Task>();
             if (imgMode == "unlimited")
             {
-                workers.Add(DrainUnlimitedAsync(imageChannel.Reader,
-                    item => ProcessThumbnailAsync(run, connId, deviceId, item, cfg.VideoFrameNormalized, cfg.ThumbnailQuality, runCts.Token),
-                    runCts.Token));
+                workers.Add(DrainUnlimitedAsync(imageChannel.Reader, ProcessThumbLimited, runCts.Token));
             }
             else
             {
-                for (int i = 0; i < imgWorkers; i++)
-                {
-                    workers.Add(ThumbnailWorkerAsync(imageChannel.Reader, run, connId, deviceId, cfg.VideoFrameNormalized, cfg.ThumbnailQuality, runCts.Token));
-                }
+                // Use RunBoundedLane directly with dynamic proceed limiter; keep original image worker count
+                workers.Add(RunBoundedLaneAsync(imageChannel.Reader, ProcessThumbLimited, imgWorkers * DefaultImageWorkers, runCts.Token));
             }
 
             if (hvyMode == "unlimited")
             {
-                workers.Add(DrainUnlimitedAsync(heavyChannel.Reader,
-                    item => ProcessHeavyAsync(run, connId, deviceId, item, cfg, runCts.Token),
-                    runCts.Token));
+                workers.Add(DrainUnlimitedAsync(heavyChannel.Reader, ProcessHeavyLimited, runCts.Token));
             }
             else
             {
-                for (int i = 0; i < hvyWorkers; i++)
-                {
-                    workers.Add(HeavyWorkerAsync(heavyChannel.Reader, run, connId, deviceId, cfg, runCts.Token));
-                }
+                // Ensure enough heavy workers to utilize dynamic proceed cores (up to allowed-1)
+                int heavyPool = Math.Max(hvyWorkers, Math.Max(1, allowed - 1));
+                workers.Add(RunBoundedLaneAsync(heavyChannel.Reader, ProcessHeavyLimited, heavyPool, runCts.Token));
             }
 
             // ── Producer: deep-walk each target folder (fetch) or queue the explicit
@@ -299,6 +366,37 @@ public class ActionRunner
         };
     }
 
+    private async Task<int> GetAllowedCoresAsync(string connId, string parallelWorkHint, CancellationToken ct)
+    {
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(5));
+            var cfg = await _hub.Clients.Client(connId).InvokeAsync<JsonElement>("GetDeviceConfig", cts.Token);
+            if (cfg.ValueKind == JsonValueKind.Object)
+            {
+                if (cfg.TryGetProperty("coreSet", out var cs) && cs.TryGetInt32(out int v) && v > 0) return Math.Max(1, v);
+                if (cfg.TryGetProperty("coreAmount", out var ca) && ca.TryGetInt32(out int tot) && tot > 0)
+                {
+                    // fallback compute locally using hint and tot
+                    string m = (parallelWorkHint ?? "Medium").ToLowerInvariant();
+                    if (m == "low") return Math.Min(2, tot);
+                    if (m == "high") return Math.Max(1, (int)Math.Ceiling(tot * 0.75));
+                    if (m == "absolute") return tot;
+                    return Math.Max(1, (int)Math.Ceiling(tot / 2.0));
+                }
+            }
+        }
+        catch { }
+        // fallback from pushed cfg
+        string mode = (parallelWorkHint ?? "Medium").ToLowerInvariant();
+        int localTot = Environment.ProcessorCount;
+        if (mode == "low") return Math.Min(2, localTot);
+        if (mode == "high") return Math.Max(1, (int)Math.Ceiling(localTot * 0.75));
+        if (mode == "absolute") return localTot;
+        return Math.Max(1, (int)Math.Ceiling(localTot / 2.0));
+    }
+
     /// <summary>Ancestor chain of a relative folder path: immediate parent up to the root ("").</summary>
     private static IEnumerable<string> Ancestors(string folder)
     {
@@ -362,19 +460,19 @@ public class ActionRunner
             switch (kind)
             {
                 case FileKind.Image when wantImages:
-                    added = Queue(imageWriter, child, kind, isThumb: true, seenItems);
+                    added = Queue(imageWriter, child, kind, isThumb: true, seenItems, run);
                     break;
                 case FileKind.Video when wantVideoThumb:
-                    added = Queue(heavyWriter, child, kind, isThumb: true, seenItems);
+                    added = Queue(heavyWriter, child, kind, isThumb: true, seenItems, run);
                     break;
                 case FileKind.Video when wantVideoActual:
-                    added = Queue(heavyWriter, child, kind, isThumb: false, seenItems);
+                    added = Queue(heavyWriter, child, kind, isThumb: false, seenItems, run);
                     break;
                 case FileKind.Audio when wantAudio:
-                    added = Queue(heavyWriter, child, kind, isThumb: false, seenItems);
+                    added = Queue(heavyWriter, child, kind, isThumb: false, seenItems, run);
                     break;
                 case FileKind.Other when wantFiles:
-                    added = Queue(heavyWriter, child, kind, isThumb: false, seenItems);
+                    added = Queue(heavyWriter, child, kind, isThumb: false, seenItems, run);
                     break;
             }
 
@@ -434,16 +532,16 @@ public class ActionRunner
         switch (kind)
         {
             case FileKind.Image:
-                added = Queue(imageWriter, nodeInfo.CurrentNode, kind, isThumb: true, seenItems);
+                added = Queue(imageWriter, nodeInfo.CurrentNode, kind, isThumb: true, seenItems, run);
                 break;
             case FileKind.Video when wantVideoThumb:
-                added = Queue(heavyWriter, nodeInfo.CurrentNode, kind, isThumb: true, seenItems);
+                added = Queue(heavyWriter, nodeInfo.CurrentNode, kind, isThumb: true, seenItems, run);
                 break;
             case FileKind.Video when wantVideoActual:
-                added = Queue(heavyWriter, nodeInfo.CurrentNode, kind, isThumb: false, seenItems);
+                added = Queue(heavyWriter, nodeInfo.CurrentNode, kind, isThumb: false, seenItems, run);
                 break;
             default:
-                added = Queue(heavyWriter, nodeInfo.CurrentNode, kind, isThumb: false, seenItems);
+                added = Queue(heavyWriter, nodeInfo.CurrentNode, kind, isThumb: false, seenItems, run);
                 break;
         }
 
@@ -454,11 +552,26 @@ public class ActionRunner
         }
     }
 
-    private static bool Queue(ChannelWriter<WorkItem> w, FileNodeDto node, FileKind kind, bool isThumb, HashSet<string> seenItems)
+    private static bool Queue(ChannelWriter<WorkItem> w, FileNodeDto node, FileKind kind, bool isThumb, HashSet<string> seenItems, ActionRunState? run = null)
     {
         string key = node.RelativePath + (isThumb ? "#thumb" : "#full");
         if (!seenItems.Add(key)) return false;
-        return w.TryWrite(new WorkItem { RelPath = node.RelativePath, Name = node.Name, Kind = kind, IsThumb = isThumb });
+        bool ok = w.TryWrite(new WorkItem { RelPath = node.RelativePath, Name = node.Name, Kind = kind, IsThumb = isThumb });
+        if (ok && run != null)
+        {
+            int pending = Interlocked.Increment(ref run.QueueSize);
+            int allowed = run.AllowedCores > 0 ? run.AllowedCores : 1;
+            int cur = run.ProceedCores;
+            int desired = ComputeProceedCores(pending, allowed, cur);
+            if (desired != cur)
+            {
+                run.ProceedCores = desired;
+                run.DiscoverCores = pending <= 0 ? allowed : Math.Max(1, allowed - desired);
+                if (allowed <= 1 && pending > 0) { run.DiscoverCores = 1; run.ProceedCores = 1; }
+                run.AppendLog($"Cores: discover={run.DiscoverCores} proceed={run.ProceedCores} queue={pending} allowed={allowed}");
+            }
+        }
+        return ok;
     }
 
     private static FileKind Classify(string name)

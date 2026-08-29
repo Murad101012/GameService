@@ -66,6 +66,16 @@ def main():
         if "l2" in m and "v2" in m:
             props["descriptionLabel2"] = m["l2"]
             props["descriptionValue2"] = m["v2"]
+        # Extra core/queue details (appended to infoMessage since JobViewV3 has only 2 description slots)
+        extra = []
+        if "l3" in m and "v3" in m:
+            extra.append(f"{m['l3']}: {m['v3']}")
+        if "l4" in m and "v4" in m:
+            extra.append(f"{m['l4']}: {m['v4']}")
+        if extra:
+            # Append to infoMessage if present
+            base_info = props.get("infoMessage", "")
+            props["infoMessage"] = (base_info + " · " + " · ".join(extra)) if base_info else " · ".join(extra)
         if props:
             update(props)
 
