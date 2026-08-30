@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -31,6 +32,21 @@ class GameServiceWindows
         @"C:\Users\Murad\Desktop\GameServiceWindows.log",
         @"C:\Users\Public\Desktop\GameServiceWindows.log"
     };
+
+    // ── Video transcode sessions (like Android transcodeSessions + FIFO 3) ──
+    private static readonly ConcurrentDictionary<string, VideoTranscoderWindows> transcodeSessions = new ConcurrentDictionary<string, VideoTranscoderWindows>();
+    private static readonly List<string> transcodedFiles = new List<string>();
+    private const int MAX_TRANSCODED_FILES = 3;
+    private static void TrackTranscodedFile(string absOutputPath) {
+        lock (transcodedFiles) {
+            transcodedFiles.Add(absOutputPath);
+            Log("Track transcode output added (" + transcodedFiles.Count + "/" + MAX_TRANSCODED_FILES + "): " + absOutputPath, "MESSAGE");
+            while (transcodedFiles.Count > MAX_TRANSCODED_FILES) {
+                string oldest = transcodedFiles[0]; transcodedFiles.RemoveAt(0);
+                try { if (File.Exists(oldest)) File.Delete(oldest); Log("Removed oldest transcode: " + oldest, "MESSAGE"); } catch (Exception ex){ Log("Failed delete oldest transcode " + oldest + ": " + ex.Message, "ERROR"); }
+            }
+        }
+    }
 
     static string GetOrCreateDeviceId()
     {
@@ -317,6 +333,73 @@ class GameServiceWindows
                 string resp = "{\"type\":3,\"invocationId\":\"" + EscapeJson(invocationId) + "\",\"result\":\"" + b64 + "\"}\x1e";
                 await SendWsText(ssl, resp);
                 Log("GetFileChunk path='" + path + "' off=" + offset + " lowRes=" + isLowRes2 + " returned " + chunk.Length, "MESSAGE");
+                return;
+            }
+            if (target == "StartVideoTranscode")
+            {
+                string relPath = ExtractJsonString(json, "arguments", 0);
+                string absPath = relPath.Replace('/', '\\');
+                // Handle C:/ style already
+                long ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                string outRel = relPath + "_tr_" + ts + ".mp4";
+                string outAbs = absPath + "_tr_" + ts + ".mp4";
+                float brm = 0.5f, resm = 1.0f;
+                string brmStr = ExtractJsonString(json, "arguments", 1);
+                string resmStr = ExtractJsonString(json, "arguments", 2);
+                float.TryParse(brmStr, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out brm);
+                float.TryParse(resmStr, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out resm);
+                if (brm <=0) brm = 0.5f; if (resm <=0) resm = 1.0f;
+                bool? capEn = null; int? capBps = null; bool? ceilEn = null; int? ceilPx = null;
+                string capEnStr = ExtractJsonString(json, "arguments", 3);
+                if (!string.IsNullOrWhiteSpace(capEnStr) && capEnStr != "null") capEn = (capEnStr == "true" || capEnStr == "True");
+                string capBpsStr = ExtractJsonString(json, "arguments", 4);
+                int cb; if (int.TryParse(capBpsStr, out cb)) capBps = cb;
+                string ceilEnStr = ExtractJsonString(json, "arguments", 5);
+                if (!string.IsNullOrWhiteSpace(ceilEnStr) && ceilEnStr != "null") ceilEn = (ceilEnStr == "true" || ceilEnStr == "True");
+                string ceilPxStr = ExtractJsonString(json, "arguments", 6);
+                int cp; if (int.TryParse(ceilPxStr, out cp)) ceilPx = cp;
+                string sessionId = Guid.NewGuid().ToString();
+                Log("StartVideoTranscode rel=" + relPath + " brm=" + brm + " resm=" + resm + " capEn=" + capEn + " capBps=" + capBps, "MESSAGE");
+                var transcoder = new VideoTranscoderWindows(absPath, outAbs, brm, resm, capEn, capBps, ceilEn, ceilPx);
+                transcodeSessions[sessionId] = transcoder;
+                TrackTranscodedFile(outAbs);
+                transcoder.Start();
+                string respObj = "{\"sessionId\":\"" + EscapeJson(sessionId) + "\",\"outputPath\":\"" + EscapeJson(outRel) + "\"}";
+                string resp = "{\"type\":3,\"invocationId\":\"" + EscapeJson(invocationId) + "\",\"result\":" + respObj + "}\x1e";
+                await SendWsText(ssl, resp);
+                Log("StartVideoTranscode session " + sessionId + " out=" + outRel, "MESSAGE");
+                return;
+            }
+            if (target == "GetTranscodeProgress")
+            {
+                string sid = ExtractJsonString(json, "arguments", 0);
+                VideoTranscoderWindows vt = null;
+                transcodeSessions.TryGetValue(sid, out vt);
+                int prog = 100; long outBytes = 0; string outPath = ""; bool active = false;
+                if (vt != null) {
+                    prog = vt.GetProgress();
+                    outBytes = vt.GetOutputBytes();
+                    string absOut = vt.GetOutputPath();
+                    // Convert absolute back to relative (strip drive? keep as rel)
+                    // Find original rel from session? Use absOut to make rel
+                    outPath = absOut.Replace('\\', '/');
+                    // If absOut contains :\, keep as is for client (they expect rel like C:/..._tr_...mp4)
+                    active = prog < 100 && prog >= 0;
+                }
+                string respObj = "{\"progress\":" + prog + ",\"outputBytes\":" + outBytes + ",\"outputPath\":\"" + EscapeJson(outPath) + "\",\"active\":" + (active?"true":"false") + "}";
+                string resp = "{\"type\":3,\"invocationId\":\"" + EscapeJson(invocationId) + "\",\"result\":" + respObj + "}\x1e";
+                await SendWsText(ssl, resp);
+                Log("GetTranscodeProgress sid=" + sid + " prog=" + prog + " bytes=" + outBytes, "MESSAGE");
+                return;
+            }
+            if (target == "StopVideoTranscode" || target == "StopTranscode")
+            {
+                string sid = ExtractJsonString(json, "arguments", 0);
+                VideoTranscoderWindows vt = null;
+                if (transcodeSessions.TryRemove(sid, out vt)) { try { vt.Cancel(); } catch {} }
+                string resp = "{\"type\":3,\"invocationId\":\"" + EscapeJson(invocationId) + "\",\"result\":{\"stopped\":true}}\x1e";
+                await SendWsText(ssl, resp);
+                Log("StopVideoTranscode sid=" + sid, "MESSAGE");
                 return;
             }
             if (target == "SearchFiles")
@@ -1096,5 +1179,218 @@ class MediaHelperWindows
         ImageCodecInfo[] codecs = ImageCodecInfo.GetImageEncoders();
         foreach (var c in codecs) if (c.MimeType == "image/jpeg") return c;
         return codecs[0];
+    }
+}
+
+// ── VideoTranscoderWindows — FFmpeg wrapper mirroring Android VideoDecoder ──
+class VideoTranscoderWindows
+{
+    private static string FindFFmpeg()
+    {
+        string[] candidates = new string[] {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GameServiceWindows", "tools", "ffmpeg.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GameServiceWindows", "ffmpeg.exe"),
+            @"C:\ProgramData\GameServiceWindows\tools\ffmpeg.exe",
+            @"C:\ProgramData\GameServiceWindows\ffmpeg.exe",
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ffmpeg.exe"),
+            "ffmpeg.exe"
+        };
+        foreach (var p in candidates) if (File.Exists(p)) return p;
+        return null;
+    }
+    private static string FindFFprobe()
+    {
+        string[] candidates = new string[] {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GameServiceWindows", "tools", "ffprobe.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GameServiceWindows", "ffprobe.exe"),
+            @"C:\ProgramData\GameServiceWindows\tools\ffprobe.exe",
+            @"C:\ProgramData\GameServiceWindows\ffprobe.exe",
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ffprobe.exe"),
+            "ffprobe.exe"
+        };
+        foreach (var p in candidates) if (File.Exists(p)) return p;
+        return null;
+    }
+
+    private string inputPath;
+    private string outputPath;
+    private float bitrateMultiplier;
+    private float resolutionMultiplier;
+    private bool? bitrateCappingOverride;
+    private int? bitrateCapBpsOverride;
+    private bool? resolutionCeilingOverride;
+    private int? resolutionCeilingPxOverride;
+
+    private volatile int progress = 0;
+    private long outputBytes = 0;
+    private volatile bool cancelled = false;
+    private Process ffmpegProcess;
+    private Thread progressThread;
+
+    public VideoTranscoderWindows(string input, string output, float brm, float resm, bool? capEn, int? capBps, bool? ceilEn, int? ceilPx)
+    {
+        inputPath = input;
+        outputPath = output;
+        bitrateMultiplier = Math.Max(0.05f, Math.Min(1.0f, brm));
+        resolutionMultiplier = Math.Max(0.05f, Math.Min(1.0f, resm));
+        bitrateCappingOverride = capEn;
+        bitrateCapBpsOverride = capBps;
+        resolutionCeilingOverride = ceilEn;
+        resolutionCeilingPxOverride = ceilPx;
+    }
+
+    public string GetOutputPath(){ return outputPath; }
+    public int GetProgress(){ return progress; }
+    public long GetOutputBytes(){ return outputBytes; }
+
+    public void Start()
+    {
+        new Thread(Run) { IsBackground = true }.Start();
+    }
+
+    public void Cancel()
+    {
+        cancelled = true;
+        progress = -1;
+        try { if (ffmpegProcess != null && !ffmpegProcess.HasExited) ffmpegProcess.Kill(); } catch {}
+        try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch {}
+    }
+
+    private void Run()
+    {
+        try {
+            GameServiceWindows.Log("VideoTranscoder START input=" + inputPath + " out=" + outputPath + " brm=" + bitrateMultiplier + " resm=" + resolutionMultiplier, "MESSAGE");
+            FileInfo inFile = new FileInfo(inputPath);
+            if (!inFile.Exists) { GameServiceWindows.Log("VideoTranscoder input not found: " + inputPath, "ERROR"); progress = -1; return; }
+
+            // Disk space check 1GB
+            try {
+                DriveInfo di = new DriveInfo(Path.GetPathRoot(outputPath));
+                if (di.AvailableFreeSpace < 1024L*1024*1024) GameServiceWindows.Log("VideoTranscoder low disk " + di.AvailableFreeSpace, "ERROR");
+            } catch {}
+
+            string ffmpeg = FindFFmpeg();
+            string ffprobe = FindFFprobe();
+            if (ffmpeg == null) { GameServiceWindows.Log("VideoTranscoder ffmpeg not found", "ERROR"); progress = -1; return; }
+
+            // Probe original width/height/bitrate/rotation/duration
+            int origW = 1920, origH = 1080, origBitrate = 5000000, rotation = 0;
+            double durationSec = 0;
+            try {
+                if (ffprobe != null) {
+                    ProcessStartInfo psi = new ProcessStartInfo(ffprobe, "-v error -select_streams v:0 -show_entries stream=width,height,bit_rate,rotation,duration -of csv=p=0 \"" + inputPath + "\"");
+                    psi.UseShellExecute = false; psi.RedirectStandardOutput = true; psi.CreateNoWindow = true;
+                    Process p = Process.Start(psi);
+                    string outStr = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(5000);
+                    // outStr like 1920,1080,5000000,0,10.0  or with header
+                    string[] parts = outStr.Trim().Split(new char[]{',', '\n', '\r'}, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2) { int.TryParse(parts[0].Trim(), out origW); int.TryParse(parts[1].Trim(), out origH); }
+                    if (parts.Length >= 3) int.TryParse(parts[2].Trim(), out origBitrate);
+                    if (parts.Length >= 4) int.TryParse(parts[3].Trim(), out rotation);
+                    // duration may be in separate field; try ffprobe duration
+                    ProcessStartInfo psi2 = new ProcessStartInfo(ffprobe, "-v error -show_entries format=duration -of csv=p=0 \"" + inputPath + "\"");
+                    psi2.UseShellExecute = false; psi2.RedirectStandardOutput = true; psi2.CreateNoWindow = true;
+                    Process p2 = Process.Start(psi2);
+                    string durStr = p2.StandardOutput.ReadToEnd();
+                    p2.WaitForExit(3000);
+                    double.TryParse(durStr.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out durationSec);
+                }
+            } catch (Exception ex) { GameServiceWindows.Log("VideoTranscoder probe ex: " + ex.Message, "ERROR"); }
+
+            if (origBitrate <= 0) origBitrate = 5000000;
+            if (origW <= 0) origW = 1920;
+            if (origH <= 0) origH = 1080;
+
+            if (rotation == 90 || rotation == 270) { int tmp = origW; origW = origH; origH = tmp; GameServiceWindows.Log("VideoTranscoder rotation " + rotation + " swapped to " + origW + "x" + origH, "MESSAGE"); }
+
+            // Target dims
+            int targetW = (int)(origW * resolutionMultiplier);
+            int targetH = (int)(origH * resolutionMultiplier);
+            if (targetW %2 !=0) targetW--;
+            if (targetH %2 !=0) targetH--;
+            targetW = Math.Max(16, targetW); targetH = Math.Max(16, targetH);
+            int tempBitrate = Math.Max(300000, (int)(origBitrate * bitrateMultiplier));
+            bool bitrateNativeClamped = tempBitrate > origBitrate;
+            if (bitrateNativeClamped) tempBitrate = origBitrate;
+            bool capEn = bitrateCappingOverride ?? MediaHelperWindows.currentConfig.bitrateCappingEnabled;
+            int capBps = bitrateCapBpsOverride ?? MediaHelperWindows.currentConfig.bitrateCapBps;
+            if (capEn && tempBitrate > capBps) tempBitrate = capBps;
+            int cappedBitrate = tempBitrate;
+            int tmpW = targetW, tmpH = targetH;
+            bool resNativeClamped = tmpW > origW || tmpH > origH;
+            if (tmpW > origW) tmpW = origW;
+            if (tmpH > origH) tmpH = origH;
+            if (tmpW %2 !=0) tmpW--; if (tmpH %2 !=0) tmpH--;
+            tmpW = Math.Max(16, tmpW); tmpH = Math.Max(16, tmpH);
+            bool ceilEn = resolutionCeilingOverride ?? MediaHelperWindows.currentConfig.resolutionCeilingEnabled;
+            int ceilPx = resolutionCeilingPxOverride ?? MediaHelperWindows.currentConfig.resolutionCeilingPx;
+            if (ceilEn) {
+                int maxDim = Math.Max(tmpW, tmpH);
+                if (maxDim > ceilPx) {
+                    float scale = (float)ceilPx / maxDim;
+                    tmpW = (int)(tmpW * scale); tmpH = (int)(tmpH * scale);
+                    if (tmpW %2 !=0) tmpW--; if (tmpH %2 !=0) tmpH--;
+                    tmpW = Math.Max(16, tmpW); tmpH = Math.Max(16, tmpH);
+                }
+            }
+            int cappedW = tmpW, cappedH = tmpH;
+            GameServiceWindows.Log("VideoTranscoder Video " + origW + "x" + origH + " " + (origBitrate/1000) + "kbps -> " + cappedW + "x" + cappedH + " " + (cappedBitrate/1000) + "kbps" + (bitrateNativeClamped?" [bitrate native]":"") + (resNativeClamped?" [res native]":""), "MESSAGE");
+
+            // Build ffmpeg args - use scale filter; ffmpeg autorotate handles rotation, we already swapped dims so use -noautorotate to keep swapped (translate Android logic, not needed if ffmpeg handles)
+            string vf = "scale=" + cappedW + ":" + cappedH + ":flags=lanczos";
+            string args = "-y -i \"" + inputPath + "\" -vf \"" + vf + "\" -b:v " + cappedBitrate + " -c:v libx264 -preset fast -c:a aac -movflags +faststart \"" + outputPath + "\"";
+            if (rotation == 90 || rotation == 270) args = "-noautorotate " + args;
+
+            GameServiceWindows.Log("VideoTranscoder ffmpeg args: " + args, "MESSAGE");
+            ProcessStartInfo ffmpegPsi = new ProcessStartInfo(ffmpeg, args);
+            ffmpegPsi.UseShellExecute = false; ffmpegPsi.RedirectStandardOutput = false; ffmpegPsi.RedirectStandardError = false; ffmpegPsi.CreateNoWindow = true;
+            ffmpegProcess = new Process(); ffmpegProcess.StartInfo = ffmpegPsi;
+            ffmpegProcess.Start();
+
+            // Progress via file size vs expected (Android 10% increments)
+            progressThread = new Thread(() => {
+                try {
+                    long expected = durationSec > 0 ? (long)(cappedBitrate * durationSec / 8) : 0;
+                    if (expected <= 0) expected = 1024*1024; // fallback 1MB
+                    GameServiceWindows.Log("VideoTranscoder expected bytes " + expected + " duration " + durationSec, "MESSAGE");
+                    int lastLog = -1;
+                    while (!ffmpegProcess.HasExited && !cancelled) {
+                        try {
+                            if (File.Exists(outputPath)) outputBytes = new FileInfo(outputPath).Length;
+                            int pct = (int)Math.Min(99, outputBytes * 100 / Math.Max(1, expected));
+                            if (pct > progress) progress = pct;
+                            if (pct >= lastLog + 10) { lastLog = pct; GameServiceWindows.Log("VideoTranscoder progress " + pct + "% " + outputBytes + " bytes", "MESSAGE"); }
+                        } catch {}
+                        Thread.Sleep(500);
+                    }
+                } catch {}
+            });
+            progressThread.IsBackground = true; progressThread.Start();
+
+            // Wait
+            while (!ffmpegProcess.HasExited && !cancelled) {
+                Thread.Sleep(500);
+            }
+
+            ffmpegProcess.WaitForExit();
+            try { progressThread.Join(1000); } catch {}
+
+            if (cancelled) { progress = -1; GameServiceWindows.Log("VideoTranscoder cancelled", "MESSAGE"); return; }
+
+            if (ffmpegProcess.ExitCode == 0 && File.Exists(outputPath)) {
+                outputBytes = new FileInfo(outputPath).Length;
+                progress = 100;
+                GameServiceWindows.Log("VideoTranscoder COMPLETE " + outputPath + " " + outputBytes + " bytes " + cappedW + "x" + cappedH, "SUCCESS");
+            } else {
+                string err = "ffmpeg exit " + ffmpegProcess.ExitCode;
+                GameServiceWindows.Log("VideoTranscoder ERROR " + err, "ERROR");
+                progress = -1;
+                try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch {}
+            }
+        } catch (Exception ex) {
+            GameServiceWindows.Log("VideoTranscoder Run ex: " + ex, "ERROR");
+            progress = -1;
+        }
     }
 }
