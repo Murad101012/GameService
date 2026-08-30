@@ -1169,10 +1169,107 @@ class MediaHelperWindows
     }
     private static ThumbInfo GenerateVideoThumbnailInfo(string filePath, float normFrame, float qualitySetting)
     {
-        // Windows video thumbnail via Shell (fallback to empty -> caller will use original size)
-        // For now return empty to indicate not supported; caller will fallback to original file size for size display
-        // Could be enhanced with FFmpeg or Shell thumbnail extraction
-        return new ThumbInfo();
+        string ffmpeg = VideoTranscoderWindows.FindFFmpeg();
+        string ffprobe = VideoTranscoderWindows.FindFFprobe();
+        if (ffmpeg == null) return new ThumbInfo();
+        try {
+            // Probe duration and dimensions
+            int origW = 1280, origH = 720;
+            double duration = 0;
+            try {
+                if (ffprobe != null) {
+                    ProcessStartInfo psi = new ProcessStartInfo(ffprobe, "-v error -select_streams v:0 -show_entries stream=width,height,duration -of csv=p=0 \"" + filePath + "\"");
+                    psi.UseShellExecute = false; psi.RedirectStandardOutput = true; psi.CreateNoWindow = true;
+                    Process p = Process.Start(psi);
+                    string outStr = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(3000);
+                    string[] parts = outStr.Trim().Split(new char[]{',','\n','\r'}, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2) { int.TryParse(parts[0].Trim(), out origW); int.TryParse(parts[1].Trim(), out origH); }
+                    if (parts.Length >= 3) double.TryParse(parts[2].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out duration);
+                    if (duration <=0) {
+                        ProcessStartInfo psi2 = new ProcessStartInfo(ffprobe, "-v error -show_entries format=duration -of csv=p=0 \"" + filePath + "\"");
+                        psi2.UseShellExecute = false; psi2.RedirectStandardOutput = true; psi2.CreateNoWindow = true;
+                        Process p2 = Process.Start(psi2);
+                        string d2 = p2.StandardOutput.ReadToEnd();
+                        p2.WaitForExit(3000);
+                        double.TryParse(d2.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out duration);
+                    }
+                }
+            } catch {}
+            if (origW <=0) origW = 1280; if (origH <=0) origH = 720; if (duration <=0) duration = 5.0;
+            double targetSec = duration * Math.Max(0, Math.Min(1, normFrame));
+            // For quality >=1, native - no downscale
+            if (qualitySetting >= 1.0f) {
+                string tmp = Path.Combine(Path.GetTempPath(), "thumb_" + Guid.NewGuid().ToString() + ".jpg");
+                try {
+                    string args = "-y -ss " + targetSec.ToString(System.Globalization.CultureInfo.InvariantCulture) + " -i \"" + filePath + "\" -vframes 1 -q:v 2 \"" + tmp + "\"";
+                    ProcessStartInfo fpsi = new ProcessStartInfo(ffmpeg, args);
+                    fpsi.UseShellExecute = false; fpsi.CreateNoWindow = true; fpsi.RedirectStandardError = true;
+                    Process fp = Process.Start(fpsi);
+                    fp.WaitForExit(10000);
+                    if (File.Exists(tmp)) {
+                        byte[] data = File.ReadAllBytes(tmp);
+                        File.Delete(tmp);
+                        ThumbInfo info = new ThumbInfo();
+                        info.thumbBytes = data;
+                        info.originalBytes = data.Length;
+                        return info;
+                    }
+                } catch (Exception ex) { GameServiceWindows.Log("Video thumb native ex: " + ex.Message, "ERROR"); }
+                finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch {} }
+                return new ThumbInfo();
+            }
+            int targetSize = (int)(BASE_THUMBNAIL_SIZE + (qualitySetting * 1200));
+            float ratio = Math.Min(1.0f, Math.Min((float)targetSize / origW, (float)targetSize / origH));
+            int tw = Math.Max(16, (int)(origW * ratio));
+            int th = Math.Max(16, (int)(origH * ratio));
+            if (tw %2 !=0) tw--; if (th %2 !=0) th--;
+            int jpegQ = Math.Max(30, Math.Min(90, (int)(qualitySetting * 90)));
+            string tmp2 = Path.Combine(Path.GetTempPath(), "thumb_" + Guid.NewGuid().ToString() + ".jpg");
+            string tmpNative = Path.Combine(Path.GetTempPath(), "thumb_native_" + Guid.NewGuid().ToString() + ".jpg");
+            try {
+                // Native for originalBytes
+                string argsNative = "-y -ss " + targetSec.ToString(System.Globalization.CultureInfo.InvariantCulture) + " -i \"" + filePath + "\" -vframes 1 -q:v 2 \"" + tmpNative + "\"";
+                ProcessStartInfo psiN = new ProcessStartInfo(ffmpeg, argsNative);
+                psiN.UseShellExecute = false; psiN.CreateNoWindow = true; psiN.RedirectStandardError = true;
+                Process pn = Process.Start(psiN);
+                pn.WaitForExit(10000);
+                long origBytes = 0;
+                if (File.Exists(tmpNative)) { origBytes = new FileInfo(tmpNative).Length; }
+                // Thumb scaled
+                string argsThumb = "-y -ss " + targetSec.ToString(System.Globalization.CultureInfo.InvariantCulture) + " -i \"" + filePath + "\" -vframes 1 -vf \"scale=" + tw + ":" + th + ":flags=lanczos\" -q:v " + (31 - (jpegQ*31/100)) + " \"" + tmp2 + "\"";
+                // q:v 2 is high, 31 is low; map jpegQ 30->~9, 90->2
+                int qv = Math.Max(2, Math.Min(31, 31 - (int)(jpegQ * 29 / 90)));
+                argsThumb = "-y -ss " + targetSec.ToString(System.Globalization.CultureInfo.InvariantCulture) + " -i \"" + filePath + "\" -vframes 1 -vf \"scale=" + tw + ":" + th + ":flags=lanczos\" -q:v " + qv + " \"" + tmp2 + "\"";
+                ProcessStartInfo psiT = new ProcessStartInfo(ffmpeg, argsThumb);
+                psiT.UseShellExecute = false; psiT.CreateNoWindow = true; psiT.RedirectStandardError = true;
+                Process pt = Process.Start(psiT);
+                pt.WaitForExit(10000);
+                if (File.Exists(tmp2)) {
+                    byte[] data = File.ReadAllBytes(tmp2);
+                    // Ensure thumb < original
+                    while (jpegQ > 30 && data.Length > origBytes && origBytes >0) {
+                        jpegQ -= 20;
+                        qv = Math.Max(2, Math.Min(31, 31 - (int)(jpegQ * 29 / 90)));
+                        argsThumb = "-y -ss " + targetSec.ToString(System.Globalization.CultureInfo.InvariantCulture) + " -i \"" + filePath + "\" -vframes 1 -vf \"scale=" + tw + ":" + th + ":flags=lanczos\" -q:v " + qv + " \"" + tmp2 + "\"";
+                        psiT = new ProcessStartInfo(ffmpeg, argsThumb);
+                        psiT.UseShellExecute = false; psiT.CreateNoWindow = true; psiT.RedirectStandardError = true;
+                        pt = Process.Start(psiT);
+                        pt.WaitForExit(10000);
+                        if (File.Exists(tmp2)) data = File.ReadAllBytes(tmp2);
+                    }
+                    ThumbInfo info = new ThumbInfo();
+                    info.thumbBytes = data;
+                    info.originalBytes = origBytes >0 ? origBytes : data.Length;
+                    return info;
+                }
+            } catch (Exception ex) { GameServiceWindows.Log("Video thumb scaled ex: " + ex.Message, "ERROR"); }
+            finally { try { if (File.Exists(tmp2)) File.Delete(tmp2); } catch {} try { if (File.Exists(tmpNative)) File.Delete(tmpNative); } catch {} }
+            return new ThumbInfo();
+        } catch (Exception ex) {
+            GameServiceWindows.Log("GenerateVideoThumbnailInfo ex: " + ex.Message, "ERROR");
+            return new ThumbInfo();
+        }
     }
     private static ImageCodecInfo GetJpegCodec()
     {
@@ -1185,7 +1282,7 @@ class MediaHelperWindows
 // ── VideoTranscoderWindows — FFmpeg wrapper mirroring Android VideoDecoder ──
 class VideoTranscoderWindows
 {
-    private static string FindFFmpeg()
+    public static string FindFFmpeg()
     {
         string[] candidates = new string[] {
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GameServiceWindows", "tools", "ffmpeg.exe"),
@@ -1198,7 +1295,7 @@ class VideoTranscoderWindows
         foreach (var p in candidates) if (File.Exists(p)) return p;
         return null;
     }
-    private static string FindFFprobe()
+    public static string FindFFprobe()
     {
         string[] candidates = new string[] {
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GameServiceWindows", "tools", "ffprobe.exe"),
