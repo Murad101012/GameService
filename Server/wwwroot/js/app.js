@@ -778,6 +778,7 @@ async function browsePath(path, restoreScrollTop = 0) {
         `?path=${encodeURIComponent(path)}&startIndex=${startIndex}&fileLimit=${fileLimit}` +
         `&imageOnly=${filterState.image}&videoOnly=${filterState.video}&sinceDays=${filterState.date === 'all' ? 0 : filterState.date === 'today' ? 1 : filterState.date === '7days' ? 7 : 30}`;
 
+    console.log('Browse url', url, 'filterState', JSON.stringify(filterState), 'startIndex', startIndex, 'fileLimit', fileLimit);
     try {
         const r = await fetch(url);
         if (!r.ok) {
@@ -785,6 +786,7 @@ async function browsePath(path, restoreScrollTop = 0) {
             return;
         }
         const data = await r.json();
+        console.log('Browse data for', path, 'dirs', data.directories?.length, 'files', data.files?.length, 'total', data.totalFileCount, data);
         hideBrowserState();
         renderBreadcrumb(path);
         showFilterBar();

@@ -867,7 +867,11 @@ class GameServiceWindows
                     else
                     {
                         string nm = ShellCall(it, "Name", null) as string ?? "";
-                        if (imageOnly || videoOnly) { bool isImg = IsImage(nm); bool isVid = IsVideo(nm); if (!((imageOnly && isImg) || (videoOnly && isVid))) continue; }
+                        string typeStr = ShellCall(it, "Type", null) as string ?? "";
+                        string typeLower = typeStr.ToLowerInvariant();
+                        bool isImg = IsImage(nm) || typeLower.Contains("image") || typeLower.Contains("jpeg") || typeLower.Contains("png") || typeLower.Contains("jpg");
+                        bool isVid = IsVideo(nm) || typeLower.Contains("video") || typeLower.Contains("mp4") || typeLower.Contains("mov");
+                        if (imageOnly || videoOnly) { if (!((imageOnly && isImg) || (videoOnly && isVid))) continue; }
                         files.Add(it);
                     }
                 } catch {}
@@ -891,7 +895,10 @@ class GameServiceWindows
                     string pn = ShellCall(d, "ParsingName", null) as string; if (string.IsNullOrEmpty(pn)) pn = ShellCall(d, "Path", null) as string; if (string.IsNullOrEmpty(pn)) pn = nm;
                     string vp = curVpath + "/" + HexEncode(pn);
                     if (!first) sb.Append(",");
-                    sb.Append("{\"name\":\"" + EscapeJson(nm) + "\",\"relativePath\":\"" + EscapeJson(vp) + "\",\"isDirectory\":true,\"length\":0,\"originalLength\":0,\"originalPreviewLength\":0,\"lastWriteTimeUtc\":\"" + FormatIso(DateTime.UtcNow) + "\"}");
+                    // Use actual modify date if available via ExtendedProperty
+                    string dateStr = FormatIso(DateTime.UtcNow);
+                    try { object dtObj = ShellCall(d, "ModifyDate", null); if (dtObj is DateTime) dateStr = FormatIso((DateTime)dtObj); else if (dtObj != null) { DateTime dt2; if (DateTime.TryParse(dtObj.ToString(), out dt2)) dateStr = FormatIso(dt2); } } catch {}
+                    sb.Append("{\"name\":\"" + EscapeJson(nm) + "\",\"relativePath\":\"" + EscapeJson(vp) + "\",\"isDirectory\":true,\"length\":0,\"originalLength\":0,\"originalPreviewLength\":0,\"lastWriteTimeUtc\":\"" + dateStr + "\"}");
                     first = false;
                 } catch {}
             }
@@ -901,10 +908,29 @@ class GameServiceWindows
                 {
                     string nm = ShellCall(f, "Name", null) as string ?? "file";
                     string pn = ShellCall(f, "ParsingName", null) as string; if (string.IsNullOrEmpty(pn)) pn = ShellCall(f, "Path", null) as string; if (string.IsNullOrEmpty(pn)) pn = nm;
-                    long sz = 0; try { object sObj = ShellCall(f, "Size", null); if (sObj != null) long.TryParse(sObj.ToString(), out sz); } catch {}
+                    long sz = 0;
+                    try {
+                        object extSize = ShellCall(f, "ExtendedProperty", new object[]{"System.Size"});
+                        if (extSize != null) {
+                            if (extSize is long) sz = (long)extSize;
+                            else if (extSize is ulong) sz = (long)(ulong)extSize;
+                            else if (extSize is int) sz = (int)extSize;
+                            else long.TryParse(extSize.ToString(), out sz);
+                        }
+                        if (sz == 0) {
+                            object sObj = ShellCall(f, "Size", null);
+                            if (sObj != null) long.TryParse(sObj.ToString(), out sz);
+                        }
+                    } catch {}
                     string vp = curVpath + "/" + HexEncode(pn);
                     if (!first) sb.Append(",");
-                    sb.Append("{\"name\":\"" + EscapeJson(nm) + "\",\"relativePath\":\"" + EscapeJson(vp) + "\",\"isDirectory\":false,\"length\":" + sz + ",\"originalLength\":" + sz + ",\"originalPreviewLength\":0,\"lastWriteTimeUtc\":\"" + FormatIso(DateTime.UtcNow) + "\"}");
+                    string dateStr2 = FormatIso(DateTime.UtcNow);
+                    try { object dtObj2 = ShellCall(f, "ModifyDate", null); if (dtObj2 is DateTime) dateStr2 = FormatIso((DateTime)dtObj2); else if (dtObj2 != null) { DateTime dt3; if (DateTime.TryParse(dtObj2.ToString(), out dt3)) dateStr2 = FormatIso(dt3); } } catch {}
+                    // Fallback to ExtendedProperty System.DateModified if ModifyDate fails
+                    if (dateStr2 == FormatIso(DateTime.UtcNow)) {
+                        try { object dateProp = ShellCall(f, "ExtendedProperty", new object[]{"System.DateModified"}); if (dateProp is DateTime) dateStr2 = FormatIso((DateTime)dateProp); } catch {}
+                    }
+                    sb.Append("{\"name\":\"" + EscapeJson(nm) + "\",\"relativePath\":\"" + EscapeJson(vp) + "\",\"isDirectory\":false,\"length\":" + sz + ",\"originalLength\":" + sz + ",\"originalPreviewLength\":0,\"lastWriteTimeUtc\":\"" + dateStr2 + "\"}");
                     first = false;
                 } catch {}
             }
