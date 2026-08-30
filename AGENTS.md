@@ -4,3 +4,10 @@ Goal of this project - Making a joke application that (based on 9 in 1 shapmoo f
 This project specifially designed for my own devices, so if it works on my device then it's enough. This project includes my game I would not someone get the game with this, only just for post.
 
 Only I can use GIT/Commit and other Git commands. You're only look for file differences, read-only for git.
+
+Codes of client side those connect to server:
+Android: DancingLineClone/Assets/Plugins/Android
+Windows: DancingLineClone/Assets/Scripts/GameService/Windows and /home/darkgreen/Desktop/GameService/Build/WindowsBuild/AgentExe for actual compiled
+
+Server: Server
+
