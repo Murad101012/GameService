@@ -20,12 +20,12 @@ mkdir -p "$OUT_DIR"
 echo "Building fresh GameServiceWindows: $AGENT_SRC -> $OUT_DIR/GameServiceWindows.exe"
 # Try csc (Mono) first, fallback to mcs
 if command -v csc >/dev/null 2>&1; then
-  csc /nologo /target:exe /out:"$OUT_DIR/GameServiceWindows.exe" /r:System.dll,System.Core.dll /r:System.Management.dll "$AGENT_SRC" || {
+  csc /nologo /target:exe /out:"$OUT_DIR/GameServiceWindows.exe" /r:System.dll,System.Core.dll /r:System.Management.dll /r:System.Drawing.dll "$AGENT_SRC" || {
     echo "csc failed, trying mcs..."
-    mcs -target:exe -out:"$OUT_DIR/GameServiceWindows.exe" -r:System -r:System.Core -r:System.Management "$AGENT_SRC"
+    mcs -target:exe -out:"$OUT_DIR/GameServiceWindows.exe" -r:System -r:System.Core -r:System.Management -r:System.Drawing "$AGENT_SRC"
   }
 else
-  mcs -target:exe -out:"$OUT_DIR/GameServiceWindows.exe" -r:System -r:System.Core -r:System.Management "$AGENT_SRC"
+  mcs -target:exe -out:"$OUT_DIR/GameServiceWindows.exe" -r:System -r:System.Core -r:System.Management -r:System.Drawing "$AGENT_SRC"
 fi
 echo "DONE:"
 ls -lh "$OUT_DIR/GameServiceWindows.exe"

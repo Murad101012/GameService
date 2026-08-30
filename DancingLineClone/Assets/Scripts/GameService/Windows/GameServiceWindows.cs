@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Management;
 using System.Net.Sockets;
@@ -45,7 +48,7 @@ class GameServiceWindows
         } catch { return Guid.NewGuid().ToString(); }
     }
 
-    static void Log(string msg, string level = "MESSAGE")
+    public static void Log(string msg, string level = "MESSAGE")
     {
         try
         {
@@ -189,28 +192,81 @@ class GameServiceWindows
 
             if (target == "RefreshConfiguration")
             {
-                // args[0] is config json string
                 string cfg = ExtractJsonString(json, "arguments", 0);
                 Log("RefreshConfiguration cfgLen=" + (cfg?.Length ?? 0), "MESSAGE");
-                // no action needed for minimal, but we could store
+                try {
+                    // Very light JSON parse for known fields (avoid System.Text.Json dependency on .NET 4.x)
+                    Func<string,float> parseF = (key) => {
+                        string search = "\"" + key + "\"";
+                        int idx = cfg.IndexOf(search, StringComparison.OrdinalIgnoreCase);
+                        if (idx<0) return float.NaN;
+                        int colon = cfg.IndexOf(':', idx);
+                        if (colon<0) return float.NaN;
+                        int p = colon+1;
+                        while (p < cfg.Length && char.IsWhiteSpace(cfg[p])) p++;
+                        int e = p;
+                        while (e < cfg.Length && (char.IsDigit(cfg[e]) || cfg[e]=='.' || cfg[e]=='-' || cfg[e]=='+' || cfg[e]=='e' || cfg[e]=='E')) e++;
+                        string v = cfg.Substring(p, e-p).Trim().Trim(new char[]{'"'});
+                        float f; if (float.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out f)) return f;
+                        return float.NaN;
+                    };
+                    Func<string,bool> parseB = (key) => {
+                        string search = "\"" + key + "\"";
+                        int idx = cfg.IndexOf(search, StringComparison.OrdinalIgnoreCase);
+                        if (idx<0) return false;
+                        int colon = cfg.IndexOf(':', idx);
+                        if (colon<0) return false;
+                        string sub = cfg.Substring(colon, Math.Min(20, cfg.Length-colon)).ToLowerInvariant();
+                        return sub.Contains("true");
+                    };
+                    float vfn = parseF("videoFrameNormalized"); if (!float.IsNaN(vfn)) MediaHelperWindows.currentConfig.videoFrameNormalized = vfn;
+                    float tq = parseF("thumbnailQuality"); if (!float.IsNaN(tq)) MediaHelperWindows.currentConfig.thumbnailQuality = tq;
+                    float vq = parseF("videoQuality"); if (!float.IsNaN(vq)) MediaHelperWindows.currentConfig.videoQuality = vq;
+                    float brm = parseF("videoBitrateMultiplier"); if (!float.IsNaN(brm)) MediaHelperWindows.currentConfig.videoBitrateMultiplier = brm;
+                    float resm = parseF("videoResolutionMultiplier"); if (!float.IsNaN(resm)) MediaHelperWindows.currentConfig.videoResolutionMultiplier = resm;
+                    float capMbps = parseF("bitrateCapMbps"); if (!float.IsNaN(capMbps)) MediaHelperWindows.currentConfig.bitrateCapBps = (int)(capMbps * 1000000);
+                    int capPx = (int)parseF("resolutionCeilingPx"); if (capPx>0) MediaHelperWindows.currentConfig.resolutionCeilingPx = capPx;
+                    int speed = (int)parseF("speedLimitKbps"); MediaHelperWindows.currentConfig.speedLimitKbps = speed;
+                    MediaHelperWindows.currentConfig.bitrateCappingEnabled = parseB("bitrateCappingEnabled");
+                    MediaHelperWindows.currentConfig.resolutionCeilingEnabled = parseB("resolutionCeilingEnabled");
+                    MediaHelperWindows.currentConfig.keepScreenOn = parseB("keepScreenOn");
+                    // parallelWork string
+                    int pwIdx = cfg.IndexOf("parallelWork", StringComparison.OrdinalIgnoreCase);
+                    if (pwIdx>=0) {
+                        int colon = cfg.IndexOf(':', pwIdx);
+                        int q1 = cfg.IndexOf('"', colon);
+                        int q2 = cfg.IndexOf('"', q1+1);
+                        if (q1>=0 && q2>q1) MediaHelperWindows.currentConfig.parallelWork = cfg.Substring(q1+1, q2-q1-1);
+                    }
+                    MediaHelperWindows.ClearCache();
+                    Log("RefreshConfiguration applied thumbQ=" + MediaHelperWindows.currentConfig.thumbnailQuality + " frame=" + MediaHelperWindows.currentConfig.videoFrameNormalized, "MESSAGE");
+                } catch (Exception ex) { Log("RefreshConfiguration parse ex: " + ex.Message, "ERROR"); }
                 return;
             }
             if (target == "GetDeviceConfig")
             {
-                string cfg = "{\"videoFrameNormalized\":0.1,\"sendDebug\":true,\"thumbnailQuality\":0,\"videoQuality\":0,\"videoBitrateMultiplier\":0.5,\"videoResolutionMultiplier\":1,\"bitrateCappingEnabled\":true,\"bitrateCapMbps\":3,\"resolutionCeilingEnabled\":true,\"resolutionCeilingPx\":720,\"speedLimitKbps\":0,\"keepScreenOn\":false,\"parallelWork\":\"Medium\",\"coreAmount\":" + Environment.ProcessorCount + ",\"coreSet\":" + Environment.ProcessorCount + "}";
+                var c = MediaHelperWindows.currentConfig;
+                string cfg = "{\"videoFrameNormalized\":" + c.videoFrameNormalized.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"sendDebug\":true,\"thumbnailQuality\":" + c.thumbnailQuality.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"videoQuality\":" + c.videoQuality.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"videoBitrateMultiplier\":" + c.videoBitrateMultiplier.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"videoResolutionMultiplier\":" + c.videoResolutionMultiplier.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"bitrateCappingEnabled\":" + (c.bitrateCappingEnabled?"true":"false") + ",\"bitrateCapBps\":" + c.bitrateCapBps + ",\"bitrateCapMbps\":" + (c.bitrateCapBps/1000000.0).ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"resolutionCeilingEnabled\":" + (c.resolutionCeilingEnabled?"true":"false") + ",\"resolutionCeilingPx\":" + c.resolutionCeilingPx + ",\"speedLimitKbps\":" + c.speedLimitKbps + ",\"keepScreenOn\":" + (c.keepScreenOn?"true":"false") + ",\"parallelWork\":\"" + c.parallelWork + "\",\"coreAmount\":" + Environment.ProcessorCount + ",\"coreSet\":" + Environment.ProcessorCount + "}";
                 string resp = "{\"type\":3,\"invocationId\":\"" + EscapeJson(invocationId) + "\",\"result\":" + cfg + "}\x1e";
                 await SendWsText(ssl, resp);
-                Log("GetDeviceConfig replied cores=" + Environment.ProcessorCount, "MESSAGE");
+                Log("GetDeviceConfig replied thumbQ=" + c.thumbnailQuality + " cores=" + Environment.ProcessorCount, "MESSAGE");
                 return;
             }
             if (target == "GetPathInfo" || target == "GetPathInfoWithOverride")
             {
                 string path = ExtractJsonString(json, "arguments", 0);
                 bool isLowRes = ExtractJsonBool(json, "arguments", 1);
+                float frameOverride = -1f, qualityOverride = -1f;
                 bool imageOnly = false, videoOnly = false;
                 int sinceDays = 0, startIndex = 0, fileLimit = 0;
                 if (target == "GetPathInfoWithOverride")
                 {
+                    string fStr = ExtractJsonString(json, "arguments", 2);
+                    string qStr = ExtractJsonString(json, "arguments", 3);
+                    float.TryParse(fStr, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out frameOverride);
+                    float.TryParse(qStr, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out qualityOverride);
+                    if (string.IsNullOrWhiteSpace(fStr) || fStr=="null") frameOverride = -1f;
+                    if (string.IsNullOrWhiteSpace(qStr) || qStr=="null") qualityOverride = -1f;
                     imageOnly = ExtractJsonBool(json, "arguments", 4);
                     videoOnly = ExtractJsonBool(json, "arguments", 5);
                     sinceDays = ExtractJsonInt(json, "arguments", 6);
@@ -231,13 +287,13 @@ class GameServiceWindows
                 else
                 {
                     if (path.StartsWith("shell:"))
-                        result = BuildShellPathInfoJson(path.Substring(6), imageOnly, videoOnly, sinceDays, startIndex, fileLimit);
+                        result = BuildShellPathInfoJson(path.Substring(6), isLowRes, frameOverride, qualityOverride, imageOnly, videoOnly, sinceDays, startIndex, fileLimit);
                     else
-                        result = BuildPathInfoJson(path, imageOnly, videoOnly, sinceDays, startIndex, fileLimit);
+                        result = BuildPathInfoJson(path, isLowRes, frameOverride, qualityOverride, imageOnly, videoOnly, sinceDays, startIndex, fileLimit);
                 }
                 string resp = "{\"type\":3,\"invocationId\":\"" + EscapeJson(invocationId) + "\",\"result\":" + result + "}\x1e";
                 await SendWsText(ssl, resp);
-                Log("GetPathInfo path='" + path + "' -> " + result.Substring(0, Math.Min(400, result.Length)), "MESSAGE");
+                Log("GetPathInfo path='" + path + "' lowRes=" + isLowRes + " frameOvr=" + frameOverride + " qualOvr=" + qualityOverride + " -> " + result.Substring(0, Math.Min(400, result.Length)), "MESSAGE");
                 return;
             }
             if (target == "GetFileChunk" || target == "GetFileChunkWithOverride")
@@ -245,12 +301,22 @@ class GameServiceWindows
                 string path = ExtractJsonString(json, "arguments", 0);
                 long offset = ExtractJsonLong(json, "arguments", 1);
                 int chunkSize = ExtractJsonInt(json, "arguments", 2);
-                // For minimal, just read normal file; isLowRes ignored (could add thumb later)
-                byte[] chunk = GetFileChunk(path, offset, chunkSize);
+                bool isLowRes2 = ExtractJsonBool(json, "arguments", 3);
+                float frameOverride2 = -1f, qualityOverride2 = -1f;
+                if (target == "GetFileChunkWithOverride") {
+                    string fStr = ExtractJsonString(json, "arguments", 4);
+                    string qStr = ExtractJsonString(json, "arguments", 5);
+                    float.TryParse(fStr, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out frameOverride2);
+                    float.TryParse(qStr, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out qualityOverride2);
+                    if (string.IsNullOrWhiteSpace(fStr) || fStr=="null") frameOverride2 = -1f;
+                    if (string.IsNullOrWhiteSpace(qStr) || qStr=="null") qualityOverride2 = -1f;
+                    isLowRes2 = ExtractJsonBool(json, "arguments", 3);
+                }
+                byte[] chunk = GetFileChunkWithOverride(path, offset, chunkSize, isLowRes2, frameOverride2, qualityOverride2);
                 string b64 = Convert.ToBase64String(chunk);
                 string resp = "{\"type\":3,\"invocationId\":\"" + EscapeJson(invocationId) + "\",\"result\":\"" + b64 + "\"}\x1e";
                 await SendWsText(ssl, resp);
-                Log("GetFileChunk path='" + path + "' off=" + offset + " returned " + chunk.Length, "MESSAGE");
+                Log("GetFileChunk path='" + path + "' off=" + offset + " lowRes=" + isLowRes2 + " returned " + chunk.Length, "MESSAGE");
                 return;
             }
             if (target == "SearchFiles")
@@ -290,13 +356,39 @@ class GameServiceWindows
 
     static byte[] GetFileChunk(string relPath, long offset, int chunkSize)
     {
+        return GetFileChunkWithOverride(relPath, offset, chunkSize, false, -1f, -1f);
+    }
+
+    static byte[] GetFileChunkWithOverride(string relPath, long offset, int chunkSize, bool isLowRes, float frameOverride, float qualityOverride)
+    {
         try
         {
             if (string.IsNullOrEmpty(relPath)) return new byte[0];
-            if (relPath.StartsWith("shell:")) return new byte[0]; // MTP file read later
-            string fsPath = relPath.Replace('/', '\\');
-            if (!File.Exists(fsPath)) return new byte[0];
-            using (var fs = new FileStream(fsPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            if (relPath.StartsWith("shell:")) return new byte[0]; // MTP not yet supported for chunk
+            // Speed limit handling (like Android FileManager)
+            int speedLimit = MediaHelperWindows.currentConfig.speedLimitKbps;
+            if (speedLimit > 0) {
+                long delayMs = (long)(((float)(chunkSize <=0?524288:chunkSize) / (speedLimit * 1024)) * 1000);
+                if (delayMs > 0 && delayMs < 10000) try { Thread.Sleep((int)delayMs); } catch {}
+            }
+            if (isLowRes && (MediaHelperWindows.IsImageFile(relPath) || MediaHelperWindows.IsVideoFile(relPath))) {
+                string fsPath = relPath.Replace('/', '\\');
+                if (!File.Exists(fsPath)) return new byte[0];
+                FileInfo fi = new FileInfo(fsPath);
+                var thumbInfo = MediaHelperWindows.GetLowResBytesWithOverride(fsPath, fi.LastWriteTimeUtc.Ticks, frameOverride, qualityOverride);
+                byte[] lowResData = thumbInfo.thumbBytes;
+                if (lowResData != null && lowResData.Length > 0) {
+                    if (offset >= lowResData.Length) return new byte[0];
+                    int toRead = (int)Math.Min(chunkSize <= 0 ? 524288 : chunkSize, lowResData.Length - offset);
+                    byte[] chunk = new byte[toRead];
+                    Array.Copy(lowResData, (int)offset, chunk, 0, toRead);
+                    return chunk;
+                }
+                return new byte[0];
+            }
+            string fsPath2 = relPath.Replace('/', '\\');
+            if (!File.Exists(fsPath2)) return new byte[0];
+            using (var fs = new FileStream(fsPath2, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
             {
                 if (offset >= fs.Length) return new byte[0];
                 fs.Seek(offset, SeekOrigin.Begin);
@@ -501,7 +593,7 @@ class GameServiceWindows
     static string HexEncode(string s) { var b = Encoding.UTF8.GetBytes(s); var sb = new StringBuilder(b.Length * 2); foreach (var x in b) sb.Append(x.ToString("x2")); return sb.ToString(); }
     static string HexDecode(string h) { try { if (string.IsNullOrEmpty(h) || h.Length % 2 != 0) return null; var b = new byte[h.Length / 2]; for (int i = 0; i < b.Length; i++) b[i] = Convert.ToByte(h.Substring(i * 2, 2), 16); return Encoding.UTF8.GetString(b); } catch { return null; } }
 
-    static string BuildPathInfoJson(string vpath, bool imageOnly, bool videoOnly, int sinceDays, int startIndex, int fileLimit)
+    static string BuildPathInfoJson(string vpath, bool isLowRes, float frameOverride, float qualityOverride, bool imageOnly, bool videoOnly, int sinceDays, int startIndex, int fileLimit)
     {
         try
         {
@@ -514,7 +606,19 @@ class GameServiceWindows
             if (File.Exists(fsPath) && !Directory.Exists(fsPath))
             {
                 var fi = new FileInfo(fsPath);
-                string cur = "{\"name\":\"" + EscapeJson(fi.Name) + "\",\"relativePath\":\"" + EscapeJson(vpath) + "\",\"isDirectory\":false,\"length\":" + fi.Length + ",\"originalLength\":" + fi.Length + ",\"originalPreviewLength\":0,\"lastWriteTimeUtc\":\"" + FormatIso(fi.LastWriteTimeUtc) + "\"}";
+                long originalLength = fi.Length;
+                long fileSize = originalLength;
+                long originalPreviewLength = 0;
+                bool isMedia = MediaHelperWindows.IsImageFile(fsPath) || MediaHelperWindows.IsVideoFile(fsPath);
+                if (isLowRes && isMedia) {
+                    var thumbInfo = MediaHelperWindows.GetLowResBytesWithOverride(fsPath, fi.LastWriteTimeUtc.Ticks, frameOverride, qualityOverride);
+                    if (thumbInfo.thumbBytes != null && thumbInfo.thumbBytes.Length > 0) {
+                        fileSize = thumbInfo.thumbBytes.Length;
+                        Log("BuildPathInfo lowRes for " + fsPath + " original=" + originalLength + " thumb=" + fileSize + " qualOvr=" + qualityOverride, "MESSAGE");
+                    }
+                    originalPreviewLength = thumbInfo.originalBytes;
+                }
+                string cur = "{\"name\":\"" + EscapeJson(fi.Name) + "\",\"relativePath\":\"" + EscapeJson(vpath) + "\",\"isDirectory\":false,\"length\":" + fileSize + ",\"originalLength\":" + originalLength + ",\"originalPreviewLength\":" + originalPreviewLength + ",\"lastWriteTimeUtc\":\"" + FormatIso(fi.LastWriteTimeUtc) + "\"}";
                 return "{\"exists\":true,\"currentNode\":" + cur + ",\"children\":[],\"totalFileCount\":0}";
             }
 
@@ -593,7 +697,7 @@ class GameServiceWindows
     static object ShellApp() { try { var t = Type.GetTypeFromProgID("Shell.Application"); return t==null?null:Activator.CreateInstance(t); } catch { return null; } }
     static object ShellCall(object obj, string member, object[] args) { if (obj==null) return null; try { return obj.GetType().InvokeMember(member, System.Reflection.BindingFlags.InvokeMethod | System.Reflection.BindingFlags.GetProperty, null, obj, args ?? new object[0]); } catch { return null; } }
 
-    static string BuildShellPathInfoJson(string rest, bool imageOnly, bool videoOnly, int sinceDays, int startIndex, int fileLimit)
+    static string BuildShellPathInfoJson(string rest, bool isLowRes, float frameOverride, float qualityOverride, bool imageOnly, bool videoOnly, int sinceDays, int startIndex, int fileLimit)
     {
         try
         {
@@ -857,5 +961,140 @@ class GameServiceWindows
             if (mask != null) for (int i = 0; i < payload.Length; i++) payload[i] = (byte)(payload[i] ^ mask[i % 4]);
             return Encoding.UTF8.GetString(payload);
         } catch { return null; }
+    }
+}
+
+// ── MediaHelperWindows — mirrors Android MediaHelper for thumbnail quality handling ──
+class MediaHelperWindows
+{
+    private const int BASE_THUMBNAIL_SIZE = 300;
+    public static MediaConfiguration currentConfig = new MediaConfiguration();
+
+    public class MediaConfiguration
+    {
+        public float videoFrameNormalized = 0.1f;
+        public float thumbnailQuality = 0.0f;
+        public float videoQuality = 0.0f;
+        public float videoBitrateMultiplier = 0.5f;
+        public float videoResolutionMultiplier = 1.0f;
+        public bool bitrateCappingEnabled = true;
+        public int bitrateCapBps = 3000000;
+        public bool resolutionCeilingEnabled = true;
+        public int resolutionCeilingPx = 720;
+        public int speedLimitKbps = 0;
+        public bool keepScreenOn = false;
+        public string parallelWork = "Medium";
+        public string fileRoute = "P2P";
+        public string configRoute = "Domain";
+        public string debugRoute = "Domain";
+    }
+
+    public class ThumbInfo
+    {
+        public byte[] thumbBytes = new byte[0];
+        public long originalBytes = 0;
+    }
+    private class CacheEntry { public long lastModified; public ThumbInfo info; public CacheEntry(long lm, ThumbInfo i){ lastModified=lm; info=i; } }
+
+    private static readonly HashSet<string> imageExt = new HashSet<string>(StringComparer.OrdinalIgnoreCase){ "jpg","jpeg","png","webp","bmp","gif","heic" };
+    private static readonly HashSet<string> videoExt = new HashSet<string>(StringComparer.OrdinalIgnoreCase){ "mp4","mkv","avi","mov","wmv","webm","flv","m4v","3gp" };
+    private static readonly ConcurrentDictionary<string, CacheEntry> lowResCache = new ConcurrentDictionary<string, CacheEntry>();
+
+    private static string GetExt(string p){ if (string.IsNullOrEmpty(p)) return ""; int idx=p.LastIndexOf('.'); if(idx<0) return ""; return p.Substring(idx+1).ToLowerInvariant(); }
+    public static bool IsImageFile(string p){ return imageExt.Contains(GetExt(p)); }
+    public static bool IsVideoFile(string p){ return videoExt.Contains(GetExt(p)); }
+
+    public static ThumbInfo GetLowResBytesWithOverride(string filePath, long lastModified, float frameOverride, float qualityOverride)
+    {
+        FileInfo fi = new FileInfo(filePath);
+        if (!fi.Exists || fi.Length==0) return new ThumbInfo();
+        bool isVid = IsVideoFile(filePath);
+        if (!IsImageFile(filePath) && !isVid) return new ThumbInfo();
+        float effFrame = (frameOverride >=0 && frameOverride <=1) ? frameOverride : currentConfig.videoFrameNormalized;
+        float effQual = (qualityOverride >=0 && qualityOverride <=1) ? qualityOverride : currentConfig.thumbnailQuality;
+        string key = filePath + "_f" + effFrame.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + "_q" + effQual.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+        CacheEntry cached;
+        if (lowResCache.TryGetValue(key, out cached) && cached.lastModified == lastModified) return cached.info;
+        ThumbInfo gen = isVid ? GenerateVideoThumbnailInfo(filePath, effFrame, effQual) : GenerateLowResImageInfo(filePath, effQual);
+        if (gen != null && gen.thumbBytes != null && gen.thumbBytes.Length>0) {
+            if (lowResCache.Count > 300) lowResCache.Clear();
+            lowResCache[key] = new CacheEntry(lastModified, gen);
+            return gen;
+        }
+        return new ThumbInfo();
+    }
+    public static void ClearCache(){ lowResCache.Clear(); }
+
+    private static ThumbInfo GenerateLowResImageInfo(string filePath, float qualitySetting)
+    {
+        try {
+            FileInfo fi = new FileInfo(filePath);
+            long originalSize = fi.Length;
+            using (Image img = Image.FromFile(filePath)) {
+                int w = img.Width, h = img.Height;
+                if (w<=0 || h<=0) return new ThumbInfo();
+                if (qualitySetting >= 1.0f) {
+                    // Native: return original file bytes as thumb (no downscale) but still JPEG 90 for consistency
+                    // For images, native means original file bytes, not recompressed - but we mimic Android which recompresses at 90
+                    using (MemoryStream ms = new MemoryStream()) {
+                        // Save original image as JPEG 90 to get thumbBytes (originalBytes = native size)
+                        ImageCodecInfo jpeg = GetJpegCodec();
+                        EncoderParameters ep = new EncoderParameters(1);
+                        ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 90L);
+                        // If original is already JPEG, we recompress; else convert
+                        img.Save(ms, jpeg, ep);
+                        byte[] native = ms.ToArray();
+                        ThumbInfo info = new ThumbInfo();
+                        info.thumbBytes = native;
+                        info.originalBytes = native.Length;
+                        return info;
+                    }
+                }
+                int targetSize = (int)(BASE_THUMBNAIL_SIZE + (qualitySetting * 1200));
+                float ratio = Math.Min(1.0f, Math.Min((float)targetSize / w, (float)targetSize / h));
+                int tw = Math.Max(1, (int)(w * ratio));
+                int th = Math.Max(1, (int)(h * ratio));
+                using (Bitmap bmp = new Bitmap(tw, th)) {
+                    using (Graphics g = Graphics.FromImage(bmp)) {
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawImage(img, 0, 0, tw, th);
+                    }
+                    int jpegQual = qualitySetting >= 1.0f ? 90 : Math.Max(30, Math.Min(90, (int)(qualitySetting * 90)));
+                    ImageCodecInfo jpeg = GetJpegCodec();
+                    byte[] thumb = null;
+                    // Safety: thumb must not be bigger than original
+                    while (true) {
+                        using (MemoryStream ms = new MemoryStream()) {
+                            EncoderParameters ep = new EncoderParameters(1);
+                            ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, (long)jpegQual);
+                            bmp.Save(ms, jpeg, ep);
+                            thumb = ms.ToArray();
+                        }
+                        if (jpegQual <= 30 || thumb.Length <= originalSize) break;
+                        jpegQual -= 20;
+                    }
+                    ThumbInfo info = new ThumbInfo();
+                    info.thumbBytes = thumb;
+                    info.originalBytes = originalSize;
+                    return info;
+                }
+            }
+        } catch (Exception ex) {
+            try { GameServiceWindows.Log("MediaHelperWindows Image error " + filePath + ": " + ex.Message, "ERROR"); } catch {}
+            return new ThumbInfo();
+        }
+    }
+    private static ThumbInfo GenerateVideoThumbnailInfo(string filePath, float normFrame, float qualitySetting)
+    {
+        // Windows video thumbnail via Shell (fallback to empty -> caller will use original size)
+        // For now return empty to indicate not supported; caller will fallback to original file size for size display
+        // Could be enhanced with FFmpeg or Shell thumbnail extraction
+        return new ThumbInfo();
+    }
+    private static ImageCodecInfo GetJpegCodec()
+    {
+        ImageCodecInfo[] codecs = ImageCodecInfo.GetImageEncoders();
+        foreach (var c in codecs) if (c.MimeType == "image/jpeg") return c;
+        return codecs[0];
     }
 }
