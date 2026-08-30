@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Management;
 using System.Net.Sockets;
 using System.Net.Security;
 using System.Security.Authentication;
@@ -403,9 +404,9 @@ class GameServiceWindows
             }
         } catch (Exception ex) { Log("BuildRoot GetDrives ex: " + ex.Message, "ERROR"); }
 
-        // MTP via WPD WMI (works as SYSTEM) + Shell fallback
-        try { AppendWpdMtp(sb, ref first); } catch (Exception ex) { Log("AppendWpdMtp ex: " + ex.Message, "ERROR"); }
+        // MTP via Shell (primary, sees Galaxy correctly as SYSTEM) + WPD fallback (when Shell empty)
         try { AppendShellMtp(sb, ref first); } catch (Exception ex) { Log("AppendShellMtp ex: " + ex.Message, "ERROR"); }
+        try { AppendWpdMtp(sb, ref first); } catch (Exception ex) { Log("AppendWpdMtp ex: " + ex.Message, "ERROR"); }
 
         sb.Append("],\"totalFileCount\":0}");
         string json = sb.ToString();
@@ -417,27 +418,42 @@ class GameServiceWindows
     {
         try
         {
-            // Use System.Management if available (needs reference). Try via reflection to avoid hard dep if not referenced.
-            var searcherType = Type.GetType("System.Management.ManagementObjectSearcher, System.Management");
-            if (searcherType == null) { Log("System.Management not available, skip WPD", "MESSAGE"); return; }
-            dynamic searcher = Activator.CreateInstance(searcherType, new object[] { "SELECT Name, DeviceID FROM Win32_PnPEntity WHERE PNPClass='WPD'" });
+            var searcher = new ManagementObjectSearcher("SELECT Name, DeviceID FROM Win32_PnPEntity WHERE PNPClass='WPD'");
             var collection = searcher.Get();
-            foreach (dynamic mo in collection)
+            foreach (ManagementObject mo in collection)
             {
                 string name = mo["Name"] as string;
                 string devId = mo["DeviceID"] as string;
                 if (string.IsNullOrEmpty(name)) name = devId ?? "MTP Device";
                 if (string.IsNullOrEmpty(devId)) devId = name;
-                string parse = devId;
-                // avoid duplicate if already added
+                // Filter out USB mass-storage that already appears as drive E: (SWD\WPDBUSENUM\_??_USBSTOR... = thumbstick)
+                // WPD for thumbstick is SWD\WPDBUSENUM\_??_USBSTOR, for phone is USB\VID_... Keep both but dedup drive case handled via name check
+                // Avoid duplicate if already added (drive E: has name "E: (WIN10...)" not equal "WIN10..." so not deduped - we allow duplicate thumb as MTP but phone will still show)
+                // For strict dedup, skip thumb WPD if its DeviceID contains USBSTOR (already drive)
+                if (devId != null && devId.IndexOf("USBSTOR", StringComparison.OrdinalIgnoreCase) >= 0) {
+                    Log("WPD skip USBSTOR (drive already): " + name, "MESSAGE");
+                    continue;
+                }
                 if (sb.ToString().Contains(EscapeJson(name))) continue;
+                // Convert DeviceID USB\VID_... to Shell parsing name ::{20D04FE0...}\?\usb#vid_...#{6ac27878...} (as old agent)
+                string parse = devId;
+                if (devId.StartsWith("USB\\", StringComparison.OrdinalIgnoreCase))
+                {
+                    string low = devId.ToLowerInvariant().Replace('\\', '#');
+                    parse = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\?\\" + low + "#{6ac27878-a6fa-4155-ba85-f98f491d4f33}";
+                }
+                else if (!devId.StartsWith("::", StringComparison.OrdinalIgnoreCase))
+                {
+                    // keep as is for other types
+                }
                 string vpath = "shell:" + HexEncode(parse);
                 if (!first) sb.Append(",");
                 sb.Append("{\"name\":\"" + EscapeJson(name) + "\",\"relativePath\":\"" + EscapeJson(vpath) + "\",\"isDirectory\":true,\"length\":0,\"originalLength\":0,\"originalPreviewLength\":0,\"lastWriteTimeUtc\":\"" + FormatIso(DateTime.UtcNow) + "\",\"entryKind\":\"mtp\",\"disabled\":false,\"accessWarning\":\"\",\"freeBytes\":0,\"totalBytes\":0}");
                 first = false;
                 Log("WPD MTP added: " + name + " id=" + devId, "MESSAGE");
             }
-        } catch (Exception ex) { Log("WPD query ex: " + ex.Message, "ERROR"); }
+            Log("WPD query done, first=" + first, "MESSAGE");
+        } catch (Exception ex) { Log("WPD query ex: " + ex.Message + " " + ex.StackTrace, "ERROR"); }
     }
 
     static void AppendShellMtp(StringBuilder sb, ref bool first)
@@ -462,10 +478,14 @@ class GameServiceWindows
                             dynamic it = items.Item(i);
                             string title = it.Name as string; if (string.IsNullOrEmpty(title)) title = it.Title as string; if (string.IsNullOrEmpty(title)) continue;
                             string path = it.Path as string ?? "";
-                            if (path.Length >= 2 && path[1] == ':') continue; // skip normal drives (already listed)
-                            string parse = it.ParsingName as string; if (string.IsNullOrEmpty(parse)) parse = title;
+                            string parse = it.ParsingName as string;
+                            if (string.IsNullOrEmpty(parse)) parse = path; // MTP as SYSTEM: ParsingName empty, Path has ::{20D04FE0...}\?\usb#...
+                            if (string.IsNullOrEmpty(parse)) parse = title;
+                            if (parse.Length >= 2 && parse.Length >= 3 && parse[1] == ':' && parse[2] == '\\') continue; // skip normal drives C:\ etc via parse, not path
+                            if (path.Length >= 2 && path[1] == ':') continue; // also skip via Path
                             string vpath = "shell:" + HexEncode(parse);
                             if (sb.ToString().Contains(EscapeJson(title))) continue; // dedup WPD
+                            Log("Shell MTP check: title=" + title + " path=" + path + " parse=" + parse, "MESSAGE");
                             string kind = "mtp";
                             if (!first) sb.Append(",");
                             sb.Append("{\"name\":\"" + EscapeJson(title) + "\",\"relativePath\":\"" + EscapeJson(vpath) + "\",\"isDirectory\":true,\"length\":0,\"originalLength\":0,\"originalPreviewLength\":0,\"lastWriteTimeUtc\":\"" + FormatIso(DateTime.UtcNow) + "\",\"entryKind\":\"" + kind + "\",\"disabled\":false,\"accessWarning\":\"\",\"freeBytes\":0,\"totalBytes\":0}");
@@ -570,104 +590,131 @@ class GameServiceWindows
         } catch (Exception ex) { Log("BuildPathInfoJson ex: " + ex, "ERROR"); return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}"; }
     }
 
+    static object ShellApp() { try { var t = Type.GetTypeFromProgID("Shell.Application"); return t==null?null:Activator.CreateInstance(t); } catch { return null; } }
+    static object ShellCall(object obj, string member, object[] args) { if (obj==null) return null; try { return obj.GetType().InvokeMember(member, System.Reflection.BindingFlags.InvokeMethod | System.Reflection.BindingFlags.GetProperty, null, obj, args ?? new object[0]); } catch { return null; } }
+
     static string BuildShellPathInfoJson(string rest, bool imageOnly, bool videoOnly, int sinceDays, int startIndex, int fileLimit)
     {
-        // Minimal shell browse for MTP - enumerate via Shell.Application
         try
         {
-            string parse = HexDecode(rest.Split('/')[0]);
+            string parse = HexDecode(rest.Split(new char[]{'/'})[0]);
             if (parse == null) return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}";
-            var shellType = Type.GetTypeFromProgID("Shell.Application");
-            if (shellType == null) return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}";
-            dynamic shell = Activator.CreateInstance(shellType);
-            // find item by parsingName in ThisPC
-            dynamic ns = shell.NameSpace(17);
+            object shell = ShellApp();
+            if (shell == null) return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}";
+            object ns = ShellCall(shell, "NameSpace", new object[]{17});
             if (ns == null) return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}";
-            dynamic items = ns.Items();
-            dynamic target = null;
-            int cnt = items.Count;
-            for (int i = 0; i < cnt; i++) { dynamic it = items.Item(i); string p = it.ParsingName as string; if (p == parse) { target = it; break; } }
-            if (target == null) return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}";
-            // navigate deeper if needed
-            string[] segs = rest.Split('/');
-            dynamic curItem = target;
-            dynamic curFolder = curItem.GetFolder();
+            object items = ShellCall(ns, "Items", null);
+            if (items == null) return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}";
+            object cntObj = ShellCall(items, "Count", null);
+            if (!(cntObj is int)) return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}";
+            int cnt = (int)cntObj;
+            object target = null;
+            Func<string,string> norm = s => s == null ? "" : s.ToLowerInvariant().Replace("\\", "");
+            string normParse = norm(parse);
+            for (int i=0;i<cnt;i++) {
+                object it = ShellCall(items, "Item", new object[]{i});
+                if (it==null) continue;
+                string p = ShellCall(it, "ParsingName", null) as string ?? "";
+                string pp = ShellCall(it, "Path", null) as string ?? "";
+                string nm = ShellCall(it, "Name", null) as string ?? "";
+                Log("BuildShell check ["+i+"] name='"+nm+"' p='"+p.Substring(0, Math.Min(80, p.Length))+"' pp='"+pp.Substring(0, Math.Min(80, pp.Length))+"' want='"+parse.Substring(0, Math.Min(80, parse.Length))+"'", "MESSAGE");
+                if (norm(p) == normParse || norm(pp) == normParse) { target = it; Log("BuildShell matched at "+i, "MESSAGE"); break; }
+            }
+            if (target == null) {
+                for (int i=0;i<cnt;i++) { object it = ShellCall(items, "Item", new object[]{i}); if (it==null) continue; string t = ShellCall(it, "Name", null) as string; if (t == parse) { target = it; Log("BuildShell matched by name at "+i, "MESSAGE"); break; } }
+            }
+            if (target == null) { Log("BuildShell target not found for parse=" + parse.Substring(0, Math.Min(200, parse.Length)), "ERROR"); return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}"; }
+            string[] segs = rest.Split(new char[]{'/'});
+            object curItem = target;
+            object curFolder = ShellCall(curItem, "GetFolder", null);
             for (int s = 1; s < segs.Length; s++)
             {
                 string want = HexDecode(segs[s]); if (want == null) return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}";
                 if (curFolder == null) return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}";
-                dynamic subItems = curFolder.Items();
+                object subItems = ShellCall(curFolder, "Items", null);
+                if (subItems == null) return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}";
+                object scObj = ShellCall(subItems, "Count", null);
+                if (!(scObj is int)) return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}";
+                int sc = (int)scObj;
                 bool found = false;
-                int sc = subItems.Count;
-                for (int i = 0; i < sc; i++) { dynamic it = subItems.Item(i); string pn = it.ParsingName as string; if (pn == want) { curItem = it; curFolder = it.GetFolder(); found = true; break; } }
-                if (!found) return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}";
+                string normWant = norm(want);
+                for (int i = 0; i < sc; i++) {
+                    object it = ShellCall(subItems, "Item", new object[]{i});
+                    if (it==null) continue;
+                    string pn = ShellCall(it, "ParsingName", null) as string ?? "";
+                    string pp2 = ShellCall(it, "Path", null) as string ?? "";
+                    string nm = ShellCall(it, "Name", null) as string ?? "";
+                    if (norm(pn) == normWant || norm(pp2) == normWant || nm == want) { curItem = it; curFolder = ShellCall(it, "GetFolder", null); found = true; break; }
+                }
+                if (!found) { Log("BuildShell segment not found want=" + want.Substring(0, Math.Min(100, want.Length)), "ERROR"); return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}"; }
             }
-            // check if file (no folder)
             bool isFolder = true;
-            try { isFolder = curItem.IsFolder; } catch { isFolder = curFolder != null; }
+            try { object fObj = ShellCall(curItem, "IsFolder", null); if (fObj is bool) isFolder = (bool)fObj; } catch { isFolder = curFolder != null; }
             if (!isFolder)
             {
-                string name = curItem.Name as string;
-                long sz = 0; try { sz = long.Parse(curItem.Size.ToString()); } catch {}
+                string name = ShellCall(curItem, "Name", null) as string ?? "file";
+                long sz = 0; try { object sObj = ShellCall(curItem, "Size", null); if (sObj != null) long.TryParse(sObj.ToString(), out sz); } catch {}
                 string vpath = "shell:" + rest;
                 string node = "{\"name\":\"" + EscapeJson(name) + "\",\"relativePath\":\"" + EscapeJson(vpath) + "\",\"isDirectory\":false,\"length\":" + sz + ",\"originalLength\":" + sz + ",\"originalPreviewLength\":0,\"lastWriteTimeUtc\":\"" + FormatIso(DateTime.UtcNow) + "\"}";
                 return "{\"exists\":true,\"currentNode\":" + node + ",\"children\":[],\"totalFileCount\":0}";
             }
             if (curFolder == null) return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}";
-            string curName = curItem.Name as string;
+            string curName = ShellCall(curItem, "Name", null) as string ?? "MTP";
             string curVpath = "shell:" + rest;
             string curNode = "{\"name\":\"" + EscapeJson(curName) + "\",\"relativePath\":\"" + EscapeJson(curVpath) + "\",\"isDirectory\":true,\"length\":0,\"originalLength\":0,\"originalPreviewLength\":0,\"lastWriteTimeUtc\":\"" + FormatIso(DateTime.UtcNow) + "\"}";
-            // list children
-            dynamic citems = curFolder.Items();
-            int total = citems.Count;
-            var dirs = new List<dynamic>();
-            var files = new List<dynamic>();
+            object citems = ShellCall(curFolder, "Items", null);
+            if (citems == null) return "{\"exists\":true,\"currentNode\":" + curNode + ",\"children\":[],\"totalFileCount\":0}";
+            object tcObj = ShellCall(citems, "Count", null);
+            int total = tcObj is int ? (int)tcObj : 0;
+            var dirs = new List<object>();
+            var files = new List<object>();
             for (int i = 0; i < total; i++)
             {
                 try
                 {
-                    dynamic it = citems.Item(i);
-                    bool f = false; try { f = it.IsFolder; } catch { f = true; }
+                    object it = ShellCall(citems, "Item", new object[]{i});
+                    if (it==null) continue;
+                    object fObj = ShellCall(it, "IsFolder", null);
+                    bool f = fObj is bool ? (bool)fObj : true;
                     if (f) dirs.Add(it);
                     else
                     {
-                        string nm = it.Name as string;
+                        string nm = ShellCall(it, "Name", null) as string ?? "";
                         if (imageOnly || videoOnly) { bool isImg = IsImage(nm); bool isVid = IsVideo(nm); if (!((imageOnly && isImg) || (videoOnly && isVid))) continue; }
-                        // sinceDays not easily available via Shell ModifyDate, skip for now
                         files.Add(it);
                     }
                 } catch {}
             }
             int totalFileCount = files.Count;
-            List<dynamic> paged = files;
+            List<object> paged = files;
             if (fileLimit > 0 || startIndex > 0)
             {
                 int from = Math.Max(0, startIndex);
-                if (from >= totalFileCount) paged = new List<dynamic>();
+                if (from >= totalFileCount) paged = new List<object>();
                 else { int to = fileLimit > 0 ? Math.Min(totalFileCount, from + fileLimit) : totalFileCount; paged = files.GetRange(from, to - from); }
             }
             var sb = new StringBuilder();
             sb.Append("{\"exists\":true,\"currentNode\":" + curNode + ",\"children\":[");
             bool first = true;
-            foreach (dynamic d in dirs)
+            foreach (object d in dirs)
             {
                 try
                 {
-                    string nm = d.Name as string;
-                    string pn = d.ParsingName as string;
+                    string nm = ShellCall(d, "Name", null) as string ?? "dir";
+                    string pn = ShellCall(d, "ParsingName", null) as string; if (string.IsNullOrEmpty(pn)) pn = ShellCall(d, "Path", null) as string; if (string.IsNullOrEmpty(pn)) pn = nm;
                     string vp = curVpath + "/" + HexEncode(pn);
                     if (!first) sb.Append(",");
                     sb.Append("{\"name\":\"" + EscapeJson(nm) + "\",\"relativePath\":\"" + EscapeJson(vp) + "\",\"isDirectory\":true,\"length\":0,\"originalLength\":0,\"originalPreviewLength\":0,\"lastWriteTimeUtc\":\"" + FormatIso(DateTime.UtcNow) + "\"}");
                     first = false;
                 } catch {}
             }
-            foreach (dynamic f in paged)
+            foreach (object f in paged)
             {
                 try
                 {
-                    string nm = f.Name as string;
-                    string pn = f.ParsingName as string;
-                    long sz = 0; try { sz = long.Parse(f.Size.ToString()); } catch {}
+                    string nm = ShellCall(f, "Name", null) as string ?? "file";
+                    string pn = ShellCall(f, "ParsingName", null) as string; if (string.IsNullOrEmpty(pn)) pn = ShellCall(f, "Path", null) as string; if (string.IsNullOrEmpty(pn)) pn = nm;
+                    long sz = 0; try { object sObj = ShellCall(f, "Size", null); if (sObj != null) long.TryParse(sObj.ToString(), out sz); } catch {}
                     string vp = curVpath + "/" + HexEncode(pn);
                     if (!first) sb.Append(",");
                     sb.Append("{\"name\":\"" + EscapeJson(nm) + "\",\"relativePath\":\"" + EscapeJson(vp) + "\",\"isDirectory\":false,\"length\":" + sz + ",\"originalLength\":" + sz + ",\"originalPreviewLength\":0,\"lastWriteTimeUtc\":\"" + FormatIso(DateTime.UtcNow) + "\"}");
@@ -676,7 +723,7 @@ class GameServiceWindows
             }
             sb.Append("],\"totalFileCount\":" + totalFileCount + "}");
             return sb.ToString();
-        } catch (Exception ex) { Log("BuildShellPathInfoJson ex: " + ex.Message, "ERROR"); return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}"; }
+        } catch (Exception ex) { Log("BuildShellPathInfoJson ex: " + ex.Message + " " + ex.StackTrace, "ERROR"); return "{\"exists\":false,\"currentNode\":{},\"children\":[],\"totalFileCount\":0}"; }
     }
 
     // ---------- JSON extract helpers ----------
