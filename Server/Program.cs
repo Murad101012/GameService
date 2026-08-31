@@ -594,13 +594,62 @@ app.MapPost("/api/search/stop/{device}", async (string device, ConnectionManager
 
 // ── Actions endpoints ──
 app.MapGet("/api/actions", (ActionManager am) => Results.Ok(am.GetAll()));
-app.MapPost("/api/actions", async (HttpContext ctx, ActionManager am) =>
+
+// ── Pluggable remote device actions (for future client-aware devices) ──
+// GET tries to fetch from device via SignalR; if device doesn't support GetActions, returns 500.
+// POST still allows creation for testing, but will be blocked in final version when device doesn't support it.
+app.MapGet("/api/actions/device/{device}", async (string device, ActionManager am, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext) =>
 {
+    device = Uri.UnescapeDataString(device);
+    // Server device is local
+    if (device == "__server__" || device.Equals("Server", StringComparison.OrdinalIgnoreCase) || device.Equals(CommunicateSignalR.ServerDeviceName, StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.Ok(am.GetAll());
+    }
+    if (!cm.TryGetConnectionId(device, out var connId))
+    {
+        return Results.NotFound(new { message = $"Device '{device}' not connected." });
+    }
+    try
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var remoteActions = await hubContext.Clients.Client(connId).InvokeAsync<List<PhonesBridge.Services.Definitions.ActionEntry>>("GetActions", cts.Token);
+        return Results.Ok(remoteActions ?? new List<PhonesBridge.Services.Definitions.ActionEntry>());
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { message = $"Failed to fetch actions from device '{device}': {ex.Message}", error = ex.GetType().Name }, statusCode: 500);
+    }
+});
+app.MapPost("/api/actions/device/{device}", async (string device, HttpContext ctx, ActionManager am, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext) =>
+{
+    device = Uri.UnescapeDataString(device);
     try
     {
         var body = await new StreamReader(ctx.Request.Body).ReadToEndAsync();
         var entry = System.Text.Json.JsonSerializer.Deserialize<PhonesBridge.Services.Definitions.ActionEntry>(body, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         if (entry == null) return Results.BadRequest(new { message = "Invalid action" });
+
+        // Try to proxy to device if it's not server (pluggable, will fail for now since client not aware)
+        if (device != "__server__" && !device.Equals("Server", StringComparison.OrdinalIgnoreCase) && !device.Equals(CommunicateSignalR.ServerDeviceName, StringComparison.OrdinalIgnoreCase))
+        {
+            if (cm.TryGetConnectionId(device, out var connId))
+            {
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    var remoteResult = await hubContext.Clients.Client(connId).InvokeAsync<PhonesBridge.Services.Definitions.ActionEntry>("CreateAction", entry, cts.Token);
+                    if (remoteResult != null) return Results.Ok(remoteResult);
+                }
+                catch (Exception ex)
+                {
+                    // For now allow local creation for testing despite remote failure
+                    // TODO: In final version when client is aware, return error here to avoid corruption:
+                    // return Results.Json(new { message = $"Device does not support remote actions: {ex.Message}" }, statusCode: 500);
+                }
+            }
+        }
+
         var saved = am.Upsert(entry);
         return Results.Ok(saved);
     }

@@ -6,18 +6,30 @@
 
 <div class="actions-shell">
 
-    @* ===== HEADER ===== *@
-    <div class="actions-header glass-card">
-        <div>
-            <h1 class="actions-title">📋 Actions list</h1>
-            <p class="actions-subtitle">
-                Automated fetch jobs that recursively download device folders into the PC offline cache.
-            </p>
+    @* ===== ACTIONS LIST WINDOW (header row + grid in same glass-card) ===== *@
+    <div class="actions-window glass-card" style="padding:0; overflow:hidden;">
+        <div class="actions-window-header" style="display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 24px; border-bottom:1px solid var(--glass-border); flex-wrap:wrap;">
+            <div>
+                <h1 class="actions-title" style="margin:0">📋 Actions list</h1>
+                <p class="actions-subtitle" style="margin:4px 0 0; color:var(--text2); font-size:0.88rem;">
+                    Automated fetch jobs that recursively download device folders into the PC offline cache.
+                </p>
+            </div>
+            <div style="position:relative; flex-shrink:0;">
+                <button id="actions-device-btn" class="btn btn-ghost btn-xs" onclick="actionsToggleDevicePopup()" style="min-width:140px; justify-content:space-between;">
+                    <span id="actions-device-btn-label">🖥 Server</span>
+                    <span style="margin-left:8px; opacity:0.6;">▾</span>
+                </button>
+                <div id="actions-device-popup" class="dbg-popup" style="display:none; top:calc(100% + 8px); bottom:auto; right:0; left:auto; min-width:220px;"></div>
+            </div>
         </div>
+        <div id="actions-loading" class="hidden" style="padding:24px; text-align:center; color:var(--text2);">
+            <div class="spinner" style="margin:0 auto 12px;"></div>
+            <div>⏳ Trying to fetch actions from <span id="actions-loading-device" style="font-weight:600; color:var(--text);"></span>...</div>
+        </div>
+        <div id="actions-error" class="hidden" style="padding:20px; text-align:center; color:var(--red); background:rgba(234,84,85,0.08); border-top:1px solid var(--glass-border);"></div>
+        <div id="actions-grid" class="actions-grid" style="padding:16px;"></div>
     </div>
-
-    @* ===== ACTIONS LIST (add button is the very last entry) ===== *@
-    <div id="actions-grid" class="actions-grid"></div>
 
     @* ===== RUN LOG ===== *@
     <div class="runs-card glass-card">
@@ -245,6 +257,76 @@
     };
     let editingActionId = null;
 
+    // ── Actions device picker (Server vs connected devices — same style as 🐛 Device Debug) ──
+    let selectedActionsDevice = '__server__';
+    let actionsTargets = { server: { name: 'Server' }, devices: [] };
+
+    async function actionsFetchTargets() {
+        try {
+            const r = await fetch('/api/debug/targets');
+            const d = await r.json();
+            if (d.success) actionsTargets = { server: d.server, devices: d.devices || [] };
+        } catch (e) {}
+        // Auto-select server by default, keep current selection if still valid
+        if (selectedActionsDevice !== '__server__' && !actionsTargets.devices.some(x => x.name === selectedActionsDevice)) {
+            // If selected device disconnected, stay on it to show error, but update button to reflect
+        }
+        actionsUpdateDeviceBtn();
+    }
+
+    function actionsUpdateDeviceBtn() {
+        const btn = document.getElementById('actions-device-btn-label');
+        if (!btn) return;
+        if (selectedActionsDevice === '__server__') {
+            btn.textContent = '🖥 ' + (actionsTargets.server?.name || 'Server');
+        } else {
+            btn.textContent = '📱 ' + selectedActionsDevice;
+        }
+    }
+
+    function actionsToggleDevicePopup() {
+        const pop = document.getElementById('actions-device-popup');
+        if (!pop) return;
+        if (pop.style.display === 'flex') { pop.style.display = 'none'; return; }
+        pop.style.display = 'flex';
+        actionsRenderDevicePopup();
+        clearInterval(window._actionsPopTimer);
+        window._actionsPopTimer = setInterval(() => {
+            if (pop.style.display !== 'flex') { clearInterval(window._actionsPopTimer); return; }
+            actionsFetchTargets().then(actionsRenderDevicePopup);
+        }, 3000);
+    }
+
+    function actionsRenderDevicePopup() {
+        const pop = document.getElementById('actions-device-popup');
+        if (!pop) return;
+        let html = '<div class="dbg-pop-label">SERVER DEVICE</div>';
+        html += `<div class="dbg-pop-item ${selectedActionsDevice === '__server__' ? 'active' : ''}" onclick="actionsPickDevice('__server__')">🖥 ${escHtml(actionsTargets.server?.name || 'Server')}</div>`;
+        html += '<div class="dbg-pop-divider"></div>';
+        html += '<div class="dbg-pop-label">CONNECTED DEVICES</div>';
+        if (!actionsTargets.devices.length) html += '<div class="dbg-pop-empty">(no connected devices)</div>';
+        for (const dev of actionsTargets.devices) {
+            html += `<div class="dbg-pop-item ${selectedActionsDevice === dev.name ? 'active' : ''}" onclick="actionsPickDevice('${escHtml(dev.name).replace(/'/g, "\\'")}')">📱 ${escHtml(dev.name)} <span style="opacity:.5;font-size:.75rem;">${escHtml(dev.platform || '')}</span></div>`;
+        }
+        pop.innerHTML = html;
+    }
+
+    function actionsPickDevice(name) {
+        selectedActionsDevice = name;
+        document.getElementById('actions-device-popup').style.display = 'none';
+        actionsUpdateDeviceBtn();
+        refreshActions();
+    }
+
+    // Close popup when clicking outside
+    document.addEventListener('click', (e) => {
+        const pop = document.getElementById('actions-device-popup');
+        const btn = document.getElementById('actions-device-btn');
+        if (pop && btn && !pop.contains(e.target) && !btn.contains(e.target)) {
+            pop.style.display = 'none';
+        }
+    });
+
     function concurrencyChip(mode, count, icon, def) {
         const m = (mode || 'default').toLowerCase();
         if (m === 'unlimited') return `<span class="action-chip">${icon} ∞ Unlimited</span>`;
@@ -280,12 +362,14 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+        actionsFetchTargets().then(() => { actionsUpdateDeviceBtn(); refreshActions(); });
         refreshActions();
         refreshRuns();
         // Load cached + connected device lists so the Target Device dropdown and the
         // per-card run controls have names/IDs to work with.
         loadDeviceLists().then(() => refreshActions());
         setInterval(refreshRuns, 5000);
+        setInterval(() => actionsFetchTargets(), 5000);
     });
 
     function fetchJson(url, opts) {
@@ -301,8 +385,31 @@
 
     async function refreshActions() {
         const grid = document.getElementById('actions-grid');
+        const loadingEl = document.getElementById('actions-loading');
+        const errorEl = document.getElementById('actions-error');
+        const loadingDeviceEl = document.getElementById('actions-loading-device');
+        const isRemote = selectedActionsDevice !== '__server__';
+        if (isRemote) {
+            grid.innerHTML = '';
+            if (loadingEl) {
+                loadingEl.classList.remove('hidden');
+                if (loadingDeviceEl) loadingDeviceEl.textContent = selectedActionsDevice;
+            }
+            if (errorEl) errorEl.classList.add('hidden');
+        } else {
+            if (loadingEl) loadingEl.classList.add('hidden');
+            if (errorEl) errorEl.classList.add('hidden');
+        }
         try {
-            const list = await fetchJson('/api/actions');
+            let list;
+            if (!isRemote) {
+                list = await fetchJson('/api/actions');
+            } else {
+                const url = '/api/actions/device/' + encodeURIComponent(selectedActionsDevice);
+                list = await fetchJson(url);
+            }
+            if (loadingEl) loadingEl.classList.add('hidden');
+            if (errorEl) errorEl.classList.add('hidden');
             const addCard = `<div class="action-card glass-card add-action-card" onclick="openActionModal(null)" title="Add new action">
                 <div style="display:flex;align-items:center;justify-content:center;gap:10px;padding:14px 0;cursor:pointer">
                     <span style="font-size:1.3rem;color:var(--accent)">➕</span>
@@ -315,7 +422,28 @@
             }
             grid.innerHTML = list.map(a => actionCardHtml(a)).join('') + addCard;
         } catch (e) {
-            grid.innerHTML = `<div class="glass-card empty-card">Failed to load actions: ${escapeHtml(e.message)}</div>`;
+            if (loadingEl) loadingEl.classList.add('hidden');
+            if (isRemote) {
+                if (errorEl) {
+                    errorEl.innerHTML = `❌ Failed to fetch actions from '<b>${escapeHtml(selectedActionsDevice)}</b>': ${escapeHtml(e.message)}<br><span style="font-size:0.8rem; opacity:0.7;">Device may not support remote actions yet (pluggable — will be enabled when client is aware). For now you can still create new actions for testing.</span>`;
+                    errorEl.classList.remove('hidden');
+                }
+                const addCard = `<div class="action-card glass-card add-action-card" onclick="openActionModal(null)" title="Add new action (test - will be blocked in final)">
+                    <div style="display:flex;align-items:center;justify-content:center;gap:10px;padding:14px 0;cursor:pointer">
+                        <span style="font-size:1.3rem;color:var(--accent)">➕</span>
+                        <span style="font-weight:700;color:var(--text)">Add new action</span>
+                    </div>
+                </div>`;
+                // Keep grid with just add card after error
+                const grid2 = document.getElementById('actions-grid');
+                if (grid2 && !grid2.innerHTML.trim()) grid2.innerHTML = addCard;
+                else if (grid2) {
+                    // If grid already has addCard from previous, ensure it stays
+                    if (!grid2.querySelector('.add-action-card')) grid2.innerHTML = addCard;
+                }
+            } else {
+                grid.innerHTML = `<div class="glass-card empty-card">Failed to load actions: ${escapeHtml(e.message)}</div>`;
+            }
         }
     }
 
@@ -521,10 +649,39 @@
             devTarget.innerHTML = buildDeviceTargetOptions();
             devTarget.value = 'none';
             if (id) {
-                fetchJson('/api/actions').then(list => {
+                // For editing, try server first, then remote if selected device is remote
+                let fetchUrl = '/api/actions';
+                if (selectedActionsDevice !== '__server__') {
+                    fetchUrl = '/api/actions/device/' + encodeURIComponent(selectedActionsDevice);
+                }
+                fetchJson(fetchUrl).then(list => {
                     const a = list.find(x => x.id === id);
                     if (a) populateActionForm(a);
-                }).catch(() => {});
+                }).catch(() => {
+                    // Fallback to server
+                    fetchJson('/api/actions').then(list => {
+                        const a = list.find(x => x.id === id);
+                        if (a) populateActionForm(a);
+                    }).catch(() => {});
+                });
+            } else if (selectedActionsDevice !== '__server__') {
+                // Creating new action while viewing a remote device: default target to that device
+                const dev = actionsTargets.devices.find(d => d.name === selectedActionsDevice);
+                if (dev) {
+                    const optVal = 'device:' + dev.id;
+                    let opt = devTarget.querySelector(`option[value="${CSS.escape(dev.id)}"]`);
+                    // Actually value is "device:<id>", need to find by that
+                    opt = devTarget.querySelector(`option[value="device:${CSS.escape(dev.id)}"]`);
+                    if (opt) devTarget.value = opt.value;
+                    else {
+                        const optEl = document.createElement('option');
+                        optEl.value = 'device:' + dev.id;
+                        optEl.textContent = '📱 ' + dev.name;
+                        devTarget.appendChild(optEl);
+                        devTarget.value = optEl.value;
+                    }
+                    onDeviceTargetChange();
+                }
             }
             onDeviceTargetChange();
         });
@@ -931,15 +1088,23 @@
             overrides: currentOverrides()
         };
 
+        // Decide where to POST based on which device's list is currently selected
+        // For server, POST to /api/actions; for remote, POST to /api/actions/device/{device} (pluggable, will be blocked in final when client not aware)
+        let postUrl = '/api/actions';
+        if (selectedActionsDevice !== '__server__') {
+            // For now allow creation for testing even though GET will fail (pluggable)
+            postUrl = '/api/actions/device/' + encodeURIComponent(selectedActionsDevice);
+        }
+
         try {
-            await fetchJson('/api/actions', {
+            await fetchJson(postUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
             closeActionModal();
             refreshActions();
-            showToast('Action saved', 'ok');
+            showToast('Action saved' + (selectedActionsDevice !== '__server__' ? ' for ' + selectedActionsDevice : ''), 'ok');
         } catch (e) {
             showToast('Failed to save: ' + e.message, 'err', 6000);
         }
