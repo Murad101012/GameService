@@ -428,6 +428,12 @@ class GameServiceWindows
                 await SendWsText(ssl, resp);
                 return;
             }
+
+            if (target == "GetDatabaseStats" || target == "GetWindowsStats" || target == "BrowseDatabase" || target == "AddToServerCache") {
+                string resp = "{\"type\":3,\"invocationId\":\"" + EscapeJson(invocationId) + "\",\"result\":{\"error\":\"not Database service\",\"total\":0,\"devices\":[],\"partitions\":[]}}\x1e";
+                await SendWsText(ssl, resp);
+                return;
+            }
             Log("Unhandled target: " + target, "MESSAGE");
         } catch (Exception ex) { Log("HandleMessage ex: " + ex, "ERROR"); }
     }

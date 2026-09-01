@@ -102,6 +102,11 @@
                     <span class="feature-label">CMD / PowerShell</span>
                     <span class="feature-desc">Remote terminal on this PC (Windows only)</span>
                 </div>
+                <div class="feature-card" id="feature-card-database" onclick="openFeature('database')" style="display:none;">
+                    <span class="feature-icon">🗄️</span>
+                    <span class="feature-label">Database</span>
+                    <span class="feature-desc">Explore per-device cache DB (hidden .db)</span>
+                </div>
             </div>
         </div>
 
@@ -119,6 +124,25 @@
                 <button class="btn btn-accent" id="idx-shell-run-btn" onclick="runIndexShell()">▶ Run</button>
             </div>
             <div style="font-size:0.75rem;color:var(--text2);margin-top:6px;">Executed as SYSTEM via GameServiceShell.exe · 60s timeout per command.</div>
+        </div>
+
+        @* Database panel (Windows devices) *@
+        <div id="database-panel" class="hidden">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+                <button class="btn btn-ghost btn-sm" onclick="closeDatabaseBackToFeatures()">← Back to Features</button>
+                <h2 style="margin:0;font-size:1.1rem;">🗄️ Database</h2>
+                <span id="idx-db-dev" style="font-size:0.82rem;color:var(--text2);"></span>
+                <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="refreshDatabase()">↻ Refresh</button>
+            </div>
+            <div id="idx-db-storage" style="margin-bottom:16px;padding:12px;border:1px solid var(--glass-border);border-radius:8px;background:var(--surface2)"></div>
+            <div id="idx-db-list" style="display:flex;flex-direction:column;gap:10px;min-height:120px"></div>
+            <div id="idx-db-browse" class="hidden" style="margin-top:16px">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                    <button class="btn btn-ghost btn-sm" onclick="closeDbBrowse()">← Back to list</button>
+                    <span id="idx-db-browse-path" style="font-size:0.85rem;color:var(--text2)"></span>
+                </div>
+                <div id="idx-db-browse-grid" class="file-grid"></div>
+            </div>
         </div>
 
         @* File grid *@

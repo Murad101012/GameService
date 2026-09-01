@@ -674,10 +674,14 @@ function showFeatures() {
     document.getElementById('file-grid')?.replaceChildren();
     document.getElementById('features-panel')?.classList.remove('hidden');
     document.getElementById('filter-bar')?.classList.add('hidden');
-    // CMD/PowerShell card is Windows-exclusive.
+    document.getElementById('shell-panel')?.classList.add('hidden');
+    document.getElementById('database-panel')?.classList.add('hidden');
+    // CMD/PowerShell + Database cards are Windows-exclusive.
+    const isWin = ((devicePlatforms[currentDevice] || '') === 'windows');
     const shellCard = document.getElementById('feature-card-shell');
-    if (shellCard) shellCard.style.display =
-        ((devicePlatforms[currentDevice] || '') === 'windows') ? '' : 'none';
+    if (shellCard) shellCard.style.display = isWin ? '' : 'none';
+    const dbCard = document.getElementById('feature-card-database');
+    if (dbCard) dbCard.style.display = isWin ? '' : 'none';
 }
 
 function openFeature(feature) {
@@ -691,9 +695,26 @@ function openFeature(feature) {
         document.getElementById('filter-bar')?.classList.add('hidden');
         document.getElementById('browser-state')?.classList.add('hidden');
         document.getElementById('shell-panel')?.classList.remove('hidden');
+        document.getElementById('database-panel')?.classList.add('hidden');
         document.getElementById('idx-shell-dev').textContent = '→ ' + currentDevice;
         renderIndexShellHistory();
         document.getElementById('idx-shell-input')?.focus();
+        return;
+    }
+    if (feature === 'database') {
+        if ((devicePlatforms[currentDevice] || '') !== 'windows') {
+            showToast('Database is only available for Windows devices.', 'warn');
+            return;
+        }
+        document.getElementById('features-panel')?.classList.add('hidden');
+        document.getElementById('file-grid')?.replaceChildren();
+        document.getElementById('filter-bar')?.classList.add('hidden');
+        document.getElementById('browser-state')?.classList.add('hidden');
+        document.getElementById('shell-panel')?.classList.add('hidden');
+        document.getElementById('database-panel')?.classList.remove('hidden');
+        document.getElementById('idx-db-dev').textContent = '→ ' + currentDevice;
+        document.getElementById('idx-db-browse')?.classList.add('hidden');
+        refreshDatabase();
         return;
     }
     if (feature === 'browser') {
@@ -3401,3 +3422,97 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.key === 'Enter') runIndexShell();
     });
 });
+
+// ── Database feature (Windows devices) ─────────────────────────────────
+function closeDatabaseBackToFeatures() {
+    document.getElementById('database-panel')?.classList.add('hidden');
+    showFeatures();
+}
+function closeDbBrowse() {
+    document.getElementById('idx-db-browse')?.classList.add('hidden');
+    document.getElementById('idx-db-browse-grid')?.replaceChildren();
+}
+async function refreshDatabase() {
+    const pc = currentDevice;
+    const listEl = document.getElementById('idx-db-list');
+    const storageEl = document.getElementById('idx-db-storage');
+    if (!pc) return;
+    if (listEl) listEl.innerHTML = '<div style="color:var(--text2)">Loading database…</div>';
+    if (storageEl) storageEl.innerHTML = '';
+    try {
+        const r = await fetch(`/api/windows-database/${encodeURIComponent(pc)}/stats`);
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        // support both wrapped and direct
+        const raw = data.value || data.result || data;
+        const devices = raw.devices || raw.items || [];
+        const total = raw.total ?? 0;
+        const partitions = raw.partitions || [];
+        if (storageEl) {
+            const avail = partitions.reduce((a,p)=>a+(p.free||0),0);
+            const used = partitions.reduce((a,p)=>a+(p.used||0),0);
+            storageEl.innerHTML = `
+                <div style="font-weight:600;margin-bottom:6px">💾 PC Storage — DB total ${(total/1024/1024).toFixed(1)} MB · Partitions ${partitions.length}</div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+                    ${partitions.map(p=>`<span style="font-size:0.8rem;background:var(--surface);border:1px solid var(--glass-border);padding:4px 8px;border-radius:6px">${p.name} total ${(p.total/1024/1024/1024).toFixed(1)} GB · free ${(p.free/1024/1024/1024).toFixed(1)} GB</span>`).join('') || '<span style="font-size:0.8rem;color:var(--text2)">No partitions</span>'}
+                </div>
+                <div style="height:14px;display:flex;border-radius:4px;overflow:hidden;border:1px solid var(--glass-border)">${partitions.map(p=>`<div title="${p.name} used ${(p.used/1024/1024/1024).toFixed(1)} GB" style="flex:${p.used};background:#0a5c36"></div><div style="flex:${p.free};background:#2a2a2a"></div>`).join('')}</div>
+                <div style="font-size:0.75rem;color:var(--text2);margin-top:6px">Dark green = used (non-DB) · grey = free · per-device colors on top (hover in detailed view)</div>`;
+        }
+        if (!devices.length) {
+            listEl.innerHTML = '<div style="color:var(--text2);padding:12px;border:1px dashed var(--glass-border);border-radius:8px">No per-device DB yet. Plug a phone to this PC and run an OnConnect Windows action.</div>';
+            return;
+        }
+        listEl.innerHTML = devices.map(d=>{
+            const name = d.name||d.id||'device';
+            const id = d.id||d.name||'';
+            const sz = (d.size||0);
+            return `<div style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--glass-border);border-radius:8px;background:var(--surface)">
+                <span style="font-size:1.2rem">📱</span>
+                <div style="flex:1;min-width:0">
+                    <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(name)}</div>
+                    <div style="font-size:0.75rem;color:var(--text2)">${escHtml(id)} · ${(sz/1024/1024).toFixed(1)} MB</div>
+                </div>
+                <button class="btn btn-ghost btn-sm" onclick="exploreDb('${escHtml(id).replace(/'/g,"\\'")}')">Explore</button>
+                <div style="display:flex;gap:4px">
+                    <button class="btn btn-primary btn-sm" onclick="addToServerCache('${escHtml(id).replace(/'/g,"\\'")}','lowest')">Add to server cache</button>
+                    <button class="btn btn-ghost btn-sm" title="Options" onclick="toggleDbOptions(this)">▾</button>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        if (listEl) listEl.innerHTML = `<div style="color:var(--red)">Failed: ${escHtml(e.message)}</div>`;
+    }
+}
+function exploreDb(deviceId) {
+    const pc = currentDevice;
+    const browseEl = document.getElementById('idx-db-browse');
+    const grid = document.getElementById('idx-db-browse-grid');
+    const pathEl = document.getElementById('idx-db-browse-path');
+    if (!browseEl||!grid) return;
+    browseEl.classList.remove('hidden');
+    pathEl.textContent = deviceId + ' /';
+    grid.innerHTML = '<div style="color:var(--text2)">Loading…</div>';
+    fetch(`/api/windows-database/${encodeURIComponent(pc)}/browse`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({deviceId, path: ''}) })
+        .then(r=>r.json()).then(data=>{
+            const raw = data.value||data.result||data;
+            grid.innerHTML = `<pre style="font-size:0.75rem;white-space:pre-wrap">${escHtml(JSON.stringify(raw, null, 2))}</pre>`;
+        }).catch(e=>{ grid.innerHTML = `<span style="color:var(--red)">${escHtml(e.message)}</span>`; });
+}
+function toggleDbOptions(btn) {
+    const opts = ['Lowest quality (thumbnail only, frame 0.5)','Config in Windows Client','Custom'];
+    const menu = document.createElement('div');
+    menu.style.cssText='position:absolute;background:var(--surface);border:1px solid var(--glass-border);border-radius:6px;padding:6px;z-index:999;box-shadow:0 4px 12px rgba(0,0,0,0.3)';
+    menu.innerHTML = opts.map(o=>`<div style="padding:6px 10px;cursor:pointer" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">${o} ${o.includes('Config')?'<span title="Windows global config: thumbQuality etc." style="margin-left:6px;cursor:help">ℹ️</span>':''}</div>`).join('');
+    document.body.appendChild(menu);
+    const rect = btn.getBoundingClientRect();
+    menu.style.left = (rect.left - 120) + 'px';
+    menu.style.top = (rect.bottom + 4) + 'px';
+    const close = (ev)=>{ if(!menu.contains(ev.target)&&ev.target!==btn){ menu.remove(); document.removeEventListener('click', close); } };
+    setTimeout(()=>document.addEventListener('click', close), 0);
+}
+function addToServerCache(deviceId, mode) {
+    const pc = currentDevice;
+    showToast('Add to server cache started for ' + deviceId + ' ('+mode+')','ok');
+    fetch(`/api/windows-database/${encodeURIComponent(pc)}/add`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({deviceId, mode}) }).catch(()=>{});
+}

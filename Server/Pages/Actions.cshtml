@@ -70,22 +70,22 @@
             @* Only for "Fetch the folder" *@
             <div id="folders-section">
                 <div class="form-group">
-                    <label class="form-label">Folders to Fetch</label>
+                    <label class="form-label">Folders to Fetch <span id="win-priority-hint" class="hidden" style="font-size:0.8rem;color:var(--accent)"> — numbers show priority (1 highest)</span></label>
                     <div class="folder-check-list" id="folder-checks">
-                        <label class="folder-check home-folder-check"><input type="checkbox" id="folder-home" value="/" onchange="onFolderToggle()" /> 🏠 Home — entire storage root</label>
-                        <label class="folder-check"><input type="checkbox" value="DCIM" onchange="onFolderToggle()" /> 📷 DCIM</label>
-                        <label class="folder-check child"><input type="checkbox" value="DCIM/Camera" onchange="onFolderToggle()" /> &nbsp;&nbsp;├ DCIM/Camera</label>
-                        <label class="folder-check child"><input type="checkbox" value="DCIM/Screenshots" onchange="onFolderToggle()" /> &nbsp;&nbsp;├ DCIM/Screenshots</label>
-                        <label class="folder-check"><input type="checkbox" value="Pictures" onchange="onFolderToggle()" /> 🖼️ Pictures</label>
-                        <label class="folder-check child"><input type="checkbox" value="Pictures/.thumbnails" onchange="onFolderToggle()" /> &nbsp;&nbsp;├ Pictures/.thumbnails</label>
+                        <label class="folder-check home-folder-check"><input type="checkbox" id="folder-home" value="/" onchange="onFolderToggle()" /> <span class="prio-badge hidden"></span> 🏠 Home — entire storage root</label>
+                        <label class="folder-check"><input type="checkbox" value="DCIM" onchange="onFolderToggle()" /> <span class="prio-badge hidden"></span> 📷 DCIM</label>
+                        <label class="folder-check child"><input type="checkbox" value="DCIM/Camera" onchange="onFolderToggle()" /> <span class="prio-badge hidden"></span> &nbsp;&nbsp;├ DCIM/Camera</label>
+                        <label class="folder-check child"><input type="checkbox" value="DCIM/Screenshots" onchange="onFolderToggle()" /> <span class="prio-badge hidden"></span> &nbsp;&nbsp;├ DCIM/Screenshots</label>
+                        <label class="folder-check"><input type="checkbox" value="Pictures" onchange="onFolderToggle()" /> <span class="prio-badge hidden"></span> 🖼️ Pictures</label>
+                        <label class="folder-check child"><input type="checkbox" value="Pictures/.thumbnails" onchange="onFolderToggle()" /> <span class="prio-badge hidden"></span> &nbsp;&nbsp;├ Pictures/.thumbnails</label>
                         <div class="custom-path-row">
                             <input id="custom-folder" class="form-select" type="text" placeholder="Custom storage-relative path, e.g. Movies/Clips" style="flex:1" />
                         </div>
                     </div>
-                    <span class="form-hint">Checking Home fetches the whole storage root — all other folders are auto-disabled. Checking a parent folder (DCIM / Pictures) includes everything beneath it.</span>
+                    <span class="form-hint">Checking Home fetches the whole storage root — all other folders are auto-disabled. For Windows PCs: click order sets priority 1..N (1 = fetch first). Overlap check: if DCIM/Camera (prio 1) is higher than DCIM (prio 3), DCIM will skip Camera.</span>
                 </div>
 
-                <div class="form-group">
+                <div class="form-group" id="content-normal">
                     <label class="form-label">Content to Fetch</label>
                     <div class="checkbox-grid">
                         <label class="merge-checkbox-item"><input type="checkbox" id="ct-images" checked /> 🖼️ Images</label>
@@ -94,6 +94,23 @@
                         <label class="merge-checkbox-item"><input type="checkbox" id="ct-files" /> 📄 Files</label>
                         <label class="merge-checkbox-item"><input type="checkbox" id="ct-audio" /> 🎵 Audio</label>
                     </div>
+                </div>
+                <div class="form-group hidden" id="content-windows">
+                    <label class="form-label">Content to Fetch <span style="font-size:0.8rem;color:var(--accent)"> — priority numbered, Videos = Video Actual</span></label>
+                    <div class="checkbox-grid" id="win-content-checks">
+                        <label class="merge-checkbox-item"><input type="checkbox" id="wct-images" checked onchange="onWinContentToggle()" /> <span class="prio-badge"></span> 🖼️ Images</label>
+                        <label class="merge-checkbox-item"><input type="checkbox" id="wct-videos" checked onchange="onWinContentToggle()" /> <span class="prio-badge"></span> 🎬 Videos</label>
+                        <label class="merge-checkbox-item"><input type="checkbox" id="wct-files" onchange="onWinContentToggle()" /> <span class="prio-badge hidden"></span> 📄 Files</label>
+                        <label class="merge-checkbox-item"><input type="checkbox" id="wct-audio" onchange="onWinContentToggle()" /> <span class="prio-badge hidden"></span> 🎵 Audio</label>
+                    </div>
+                </div>
+                <div class="form-group hidden" id="windows-devices-section">
+                    <label class="form-label">Devices (phones plugged to this PC) — toggle Copy files of this device</label>
+                    <div id="win-devices-list" style="display:flex;flex-direction:column;gap:6px"></div>
+                    <span class="form-hint">List from PC seen_devices.json (not per-action). Unchecked devices are skipped.</span>
+                </div>
+                <div class="form-group hidden" id="windows-remove-section">
+                    <label class="merge-checkbox-item"><input type="checkbox" id="win-remove-after" checked /> 🗑 Remove from Windows Client if Server got it</label>
                 </div>
             </div>
 
@@ -316,6 +333,7 @@
         document.getElementById('actions-device-popup').style.display = 'none';
         actionsUpdateDeviceBtn();
         refreshActions();
+        setTimeout(refreshWindowsMode, 200);
     }
 
     // Close popup when clicking outside
@@ -404,6 +422,8 @@
             let list;
             if (!isRemote) {
                 list = await fetchJson('/api/actions');
+            } else if (isWindowsSelected()) {
+                list = await fetchJson('/api/windows-actions/' + encodeURIComponent(selectedActionsDevice));
             } else {
                 const url = '/api/actions/device/' + encodeURIComponent(selectedActionsDevice);
                 list = await fetchJson(url);
@@ -448,16 +468,35 @@
     }
 
     function actionCardHtml(a) {
+        const isWin = !!a.folderPriority || !!a.contentPriority || a.ownerPc;
         const isFilesAction = (a.type || '') === 'fetchFiles';
-        const contentChips = isFilesAction
+        let contentChips='';
+        if (isWin) {
+            const prio = a.contentPriority||{};
+            const order = (a.contentTypes||[]).slice().sort((x,y)=>(prio[x]||99)-(prio[y]||99));
+            contentChips = order.map(ct=>`<span class="action-chip">${CONTENT_LABELS[ct]||escapeHtml(ct)} <span style="background:var(--accent);color:#fff;border-radius:50%;padding:0 5px;margin-left:4px">${prio[ct]||''}</span></span>`).join('');
+        } else {
+            contentChips = isFilesAction
             ? [`<span class="action-chip">${a.videoFetchType === 'actual' ? '🎬 Video Actual' : '🎬 Video Thumbnail-only'}</span>`]
             : (a.contentTypes || []).map(ct => `<span class="action-chip">${CONTENT_LABELS[ct] || escapeHtml(ct)}</span>`).join('');
+        }
         const targetList = isFilesAction ? (a.files || []) : (a.folders || []);
         const targetIcon = isFilesAction ? '📄' : '📁';
-        const targetChips = targetList.slice(0, 4).map(f => {
-            const label = (f === '/' || f === '') ? 'Home' : f;
-            return `<span class="action-chip">${targetIcon} ${escapeHtml(label)}</span>`;
-        }).join('');
+        let targetChips='';
+        if (isWin) {
+            const prio = a.folderPriority||{};
+            const order = targetList.slice().sort((x,y)=>(prio[x]||99)-(prio[y]||99));
+            targetChips = order.slice(0,4).map(f => {
+                const label = (f === '/' || f === '') ? 'Home' : f;
+                const pr = prio[f]||'';
+                return `<span class="action-chip"><span style="background:var(--accent);color:#fff;border-radius:50%;padding:0 5px;margin-right:4px">${pr}</span>${targetIcon} ${escapeHtml(label)}</span>`;
+            }).join('');
+        } else {
+            targetChips = targetList.slice(0, 4).map(f => {
+                const label = (f === '/' || f === '') ? 'Home' : f;
+                return `<span class="action-chip">${targetIcon} ${escapeHtml(label)}</span>`;
+            }).join('');
+        }
         const triggerChip = a.trigger === 'onconnect'
             ? '<span class="action-chip">🔌 On Connect</span>'
             : '<span class="action-chip">✋ Manual</span>';
@@ -624,10 +663,14 @@
         document.getElementById('ct-images').checked = true;
         document.getElementById('ct-vidthumb').checked = true;
         document.querySelector('input[name="action-trigger"][value="manual"]').checked = true;
+        // default onconnect for windows, manual for server
+        if (isWindowsSelected()) document.querySelector('input[name="action-trigger"][value="onconnect"]').checked = true;
         document.querySelector('input[name="action-config"][value="global"]').checked = true;
         document.querySelector('input[name="action-vidtype"][value="thumbnail"]').checked = true;
         setFilesList([]);
         setOverrideDefaults();
+        winFolderOrder = [];
+        winContentOrder = [];
         setConcurrencyDefaults();
         onFolderToggle();
         onConfigMode();
@@ -688,6 +731,30 @@
 
         onActionTypeChange();
         document.getElementById('action-modal').classList.remove('hidden');
+        setTimeout(()=>{
+            refreshWindowsMode();
+            if (isWindowsSelected() && !id) {
+                // default all except Pictures/.thumbnails, priority order DCIM/Camera, DCIM/Screenshots, DCIM, Pictures, Home
+                const defaults = ['DCIM/Camera','DCIM/Screenshots','DCIM','Pictures','/'];
+                winFolderOrder = defaults.slice();
+                defaults.forEach(v=>{
+                    const el = v==='/' ? document.getElementById('folder-home') : document.querySelector(`#folder-checks input[value="${v}"]`);
+                    if (el) el.checked = true;
+                    if (v==='Pictures/.thumbnails') {
+                        const th = document.querySelector(`#folder-checks input[value="Pictures/.thumbnails"]`);
+                        if(th) th.checked = false;
+                    }
+                });
+                updateWinPrioBadges();
+                // content defaults Images, Videos
+                winContentOrder = ['wct-images','wct-videos'];
+                document.getElementById('wct-images').checked = true;
+                document.getElementById('wct-videos').checked = true;
+                document.getElementById('wct-files').checked = false;
+                document.getElementById('wct-audio').checked = false;
+                onWinContentToggle();
+            }
+        },100);
     }
 
     function populateActionForm(a) {
@@ -727,6 +794,34 @@
         onConfigMode();
         onActionTypeChange();
         refreshFileStatus();
+        // Windows priority restore
+        if (a.folderPriority) {
+            winFolderOrder = Object.entries(a.folderPriority).sort((x,y)=>x[1]-y[1]).map(x=>x[0]);
+            updateWinPrioBadges();
+        }
+        if (a.contentPriority) {
+            const rev = Object.entries(a.contentPriority).sort((x,y)=>x[1]-y[1]);
+            const map={'images':'wct-images','videos':'wct-videos','files':'wct-files','audio':'wct-audio'};
+            winContentOrder = rev.map(x=>map[x[0]]).filter(Boolean);
+            // set checkboxes
+            rev.forEach(e=>{
+                const id=map[e[0]];
+                if(id) document.getElementById(id).checked = (a.contentTypes||[]).includes(e[0]);
+            });
+            onWinContentToggle();
+        }
+        if (a.devices) {
+            setTimeout(()=>{
+                document.querySelectorAll('#win-devices-list input[type="checkbox"]').forEach(cb=>{
+                    const dev=cb.getAttribute('data-dev');
+                    if(dev && dev in a.devices) cb.checked = a.devices[dev];
+                });
+            },500);
+        }
+        if (a.removeFromWindowsAfterPush!==undefined) {
+            const el=document.getElementById('win-remove-after');
+            if(el) el.checked = !!a.removeFromWindowsAfterPush;
+        }
     }
 
     function setDeviceTargetFromAction(a) {
@@ -856,6 +951,114 @@
         } catch { }
     }
 
+    // ── Windows priority helpers ──
+    let winFolderOrder = []; // click order for folders
+    let winContentOrder = []; // for windows content
+    function isWindowsSelected() {
+        if (selectedActionsDevice === '__server__') return false;
+        const dev = actionsTargets.devices.find(d=>d.name===selectedActionsDevice);
+        return dev && (dev.platform||'').toLowerCase().includes('windows');
+    }
+    function refreshWindowsMode() {
+        const isWin = isWindowsSelected();
+        document.getElementById('win-priority-hint')?.classList.toggle('hidden', !isWin);
+        document.getElementById('content-normal')?.classList.toggle('hidden', isWin);
+        document.getElementById('content-windows')?.classList.toggle('hidden', !isWin);
+        document.getElementById('windows-devices-section')?.classList.toggle('hidden', !isWin);
+        document.getElementById('windows-remove-section')?.classList.toggle('hidden', !isWin);
+        // concurrency removed for windows
+        const conc = document.querySelector('.form-group:has(#img-mode)');
+        if (conc) conc.classList.toggle('hidden', isWin);
+        // video frame removed
+        const vf = document.getElementById('ov-vf')?.closest('.form-group');
+        if (vf) vf.classList.toggle('hidden', isWin);
+        if (isWin) {
+            // default windows overrides maxed (raw)
+            document.querySelector('input[name="action-config"][value="custom"]').checked = true;
+            onConfigMode();
+            document.getElementById('ov-tq').value = 1.0; document.getElementById('ov-tq-disp').textContent='1.00';
+            document.getElementById('ov-brm').value = 1.0; document.getElementById('ov-brm-disp').textContent='1.00';
+            document.getElementById('ov-resm').value = 1.0; document.getElementById('ov-resm-disp').textContent='1.00';
+            document.getElementById('ov-brcap-en').checked = false;
+            document.getElementById('ov-rescap-en').checked = false;
+            loadWinDevices();
+        }
+        updateWinPrioBadges();
+        onWinContentToggle();
+    }
+    function onWinContentToggle() {
+        // priority is click order
+        const ids = ['wct-images','wct-videos','wct-files','wct-audio'];
+        ids.forEach(id=>{
+            const el=document.getElementById(id);
+            if(!el) return;
+            const label=el.closest('label');
+            const badge=label.querySelector('.prio-badge');
+            if (el.checked) {
+                if (!winContentOrder.includes(id)) winContentOrder.push(id);
+            } else {
+                winContentOrder = winContentOrder.filter(x=>x!==id);
+                badge.classList.add('hidden');
+            }
+        });
+        // re-rank
+        winContentOrder.forEach((id, idx)=>{
+            const badge=document.getElementById(id).closest('label').querySelector('.prio-badge');
+            badge.textContent = (idx+1);
+            badge.classList.remove('hidden');
+        });
+        // untoggled hidden already
+        ids.forEach(id=>{
+            const el=document.getElementById(id);
+            if(!el.checked) el.closest('label').querySelector('.prio-badge').classList.add('hidden');
+        });
+    }
+    function updateWinPrioBadges() {
+        const checks = document.querySelectorAll('#folder-checks input[type="checkbox"]');
+        checks.forEach(c=>{
+            const badge=c.closest('label').querySelector('.prio-badge');
+            if (!badge) return;
+            if (!c.checked) { badge.classList.add('hidden'); badge.textContent=''; return; }
+            let idx = winFolderOrder.indexOf(c.value||c.id);
+            if (idx===-1) { winFolderOrder.push(c.value||c.id); idx = winFolderOrder.length-1; }
+            // reorder based on current checked set order?
+            // Ensure order reflects click order
+            badge.textContent = (idx+1);
+            badge.classList.remove('hidden');
+            badge.style.cssText='display:inline-block;min-width:18px;height:18px;line-height:18px;text-align:center;background:var(--accent);color:#fff;border-radius:50%;font-size:0.7rem;margin-right:4px';
+        });
+        // remove unchecked from order
+        winFolderOrder = winFolderOrder.filter(v=>{
+            const el = document.querySelector(`#folder-checks input[value="${v}"]`) || document.getElementById(v);
+            return el && el.checked;
+        });
+        // re-assign numbers after removal
+        winFolderOrder.forEach((v,i)=>{
+            const el = document.querySelector(`#folder-checks input[value="${v}"]`) || document.getElementById(v);
+            if(el) el.closest('label').querySelector('.prio-badge').textContent = (i+1);
+        });
+    }
+    async function loadWinDevices(){
+        const listEl=document.getElementById('win-devices-list');
+        if(!listEl) return;
+        listEl.innerHTML='<span style="color:var(--text2)">Loading seen devices...</span>';
+        try{
+            const pc = selectedActionsDevice;
+            // try fetch seen devices via debug targets? For now show placeholder from PC stats
+            let devices=[];
+            try{
+                const r=await fetch(`/api/windows-database/${encodeURIComponent(pc)}/stats`);
+                if(r.ok){ const j=await r.json(); devices=(j.devices||j.items||[]).map(d=>({name:d.name||d.id, id:d.id||d.name})); }
+            }catch{}
+            if(!devices.length){
+                // fallback: use actionsTargets devices if any
+                devices = actionsTargets.devices.filter(d=>d.platform!=='Windows').map(d=>({name:d.name, id:d.id}));
+            }
+            if(!devices.length) devices=[{name:'(no devices yet - will populate when phones plug to PC)', id:''}];
+            listEl.innerHTML = devices.map(d=>`<label class="merge-checkbox-item"><input type="checkbox" checked data-dev="${d.id||d.name}" /> <span>${d.name}</span> <span style="opacity:.6;font-size:.75rem">${d.id||''}</span></label>`).join('');
+        }catch(e){ listEl.innerHTML='<span style="color:var(--red)">Failed to load: '+e.message+'</span>'; }
+    }
+
     /* Parent checkbox → disable children already covered by parent selection.
        Home (storage root) → disables every other folder checkbox. */
     function onFolderToggle() {
@@ -896,6 +1099,7 @@
                 }
             });
         });
+        if (isWindowsSelected()) updateWinPrioBadges();
     }
 
     function onTriggerChange() {}
@@ -1066,6 +1270,58 @@
         }
         if (hvyMode === 'custom' && (!(document.getElementById('hvy-count').value > 0) || document.getElementById('hvy-count').value > 50)) {
             showToast('Video/other concurrency must be between 1 and 50.', 'warn'); return;
+        }
+
+        // Windows PC branch
+        if (isWindowsSelected()) {
+            // Build priority maps
+            const folderPriority = {};
+            winFolderOrder.forEach((v,i)=>{ folderPriority[v]=i+1; });
+            // ensure all folders have priority (fallback order)
+            folders.forEach(f=>{ if(!(f in folderPriority)) folderPriority[f]=Object.keys(folderPriority).length+1; });
+            const contentPriority = {};
+            const winCtMap = { 'wct-images':'images', 'wct-videos':'videos', 'wct-files':'files', 'wct-audio':'audio' };
+            winContentOrder.forEach((id,i)=>{ const key=winCtMap[id]; if(key) contentPriority[key]=i+1; });
+            const winContentTypes = winContentOrder.map(id=>winCtMap[id]).filter(Boolean);
+            const winDevices = {};
+            document.querySelectorAll('#win-devices-list input[type="checkbox"]').forEach(cb=>{
+                const dev=cb.getAttribute('data-dev');
+                if(dev) winDevices[dev]=cb.checked;
+            });
+            const winPayload = {
+                id: editingActionId || crypto.randomUUID(),
+                name: document.getElementById('action-name').value.trim() || 'Windows Fetch',
+                folders: folders,
+                folderPriority: folderPriority,
+                contentTypes: winContentTypes.length? winContentTypes : ['images','videos'],
+                contentPriority: contentPriority,
+                trigger: trigger,
+                enabled: true,
+                devices: winDevices,
+                deviceTarget: 'all',
+                useGlobalConfig: useGlobal,
+                overrides: currentOverrides(),
+                removeFromWindowsAfterPush: document.getElementById('win-remove-after')?.checked ?? true,
+                ownerPc: selectedActionsDevice,
+                files: files,
+                filePriority: {}
+            };
+            // maxed overrides for windows (raw)
+            if (!useGlobal) {
+                winPayload.overrides.thumbnailQuality = 1.0;
+                winPayload.overrides.videoBitrateMultiplier = 1.0;
+                winPayload.overrides.videoResolutionMultiplier = 1.0;
+                winPayload.overrides.bitrateCappingEnabled = false;
+                winPayload.overrides.resolutionCeilingEnabled = false;
+                winPayload.overrides.videoFrameNormalized = 0;
+            }
+            try{
+                await fetchJson('/api/windows-actions', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(winPayload)});
+                closeActionModal();
+                showToast('Windows action saved for '+selectedActionsDevice, 'ok');
+                refreshActions();
+            } catch(e){ showToast('Failed windows save: '+e.message, 'err', 6000); }
+            return;
         }
 
         const payload = {

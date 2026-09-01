@@ -750,4 +750,10 @@ public class CommunicateSignalR : Hub
             /* Console.WriteLine($"[MonitorService] {deviceName} reports {states.Count} service(s): {string.Join(", ", states.Select(s => $"{s.Name}={(s.Status==0?"up":s.Status==1?"unresponsive":"down")}"))}"); */
         }
     }
+
+    // ── Windows PC reports ──
+    public void ReportMtpDevices(string pcName, string csv) { Console.WriteLine($"[WindowsReport] MTP from {pcName}: {csv}"); DesktopNotifier.Notify($"MTP update {pcName}", csv); }
+    public void ReportPendingUploads(string pcName, string json) { Console.WriteLine($"[WindowsReport] Pending uploads from {pcName} len {json.Length}"); }
+    public void ReportStorageStop(string pcName, string reason) { Console.WriteLine($"[WindowsReport] Storage stop {pcName} {reason}"); DesktopNotifier.Notify($"Storage stop {pcName}", reason); }
+    public void ReportActionProgress(string pcName, string actionId, string progressJson) { Console.WriteLine($"[WindowsReport] Progress {pcName} {actionId} {progressJson.Substring(0, Math.Min(200, progressJson.Length))}"); }
 }

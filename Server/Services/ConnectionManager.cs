@@ -11,22 +11,23 @@ public class ConnectionManager
     /// <summary>Raised when a device's Domain/P2P link availability changes (upgrade or drop).</summary>
     public event Action<string>? LinkStatusChanged;
 
+    // Primary map: DeviceName -> latest identity (for left panel single entry)
     private readonly ConcurrentDictionary<string, DeviceIdentity> _deviceToIdentityMap = new(StringComparer.OrdinalIgnoreCase);
+    // All connections: ConnectionId -> DeviceIdentity (preserves every service connection)
+    private readonly ConcurrentDictionary<string, DeviceIdentity> _connectionMap = new();
     private readonly ConcurrentDictionary<string, string> _connectionToDeviceMap = new();
     private readonly ConcurrentDictionary<string, DeviceLinkStatus> _linkStatusMap = new(StringComparer.OrdinalIgnoreCase);
+    // DeviceName -> set of ConnectionIds (so one PC can have 3 services)
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _deviceConnections = new(StringComparer.OrdinalIgnoreCase);
 
     public void AddNewConnectedDevice(DeviceIdentity device)
     {
-        // Remove old connection mapping if device reconnected with a new ConnectionId
-        if (_deviceToIdentityMap.TryGetValue(device.DeviceName, out var oldIdentity) && oldIdentity.ConnectionId != device.ConnectionId)
-        {
-            _connectionToDeviceMap.TryRemove(oldIdentity.ConnectionId, out _);
-        }
+        _connectionMap[device.ConnectionId] = device;
+        _connectionToDeviceMap[device.ConnectionId] = device.DeviceName;
+        _deviceConnections.GetOrAdd(device.DeviceName, _ => new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase))[device.ConnectionId] = 1;
 
         _deviceToIdentityMap[device.DeviceName] = device;
-        _connectionToDeviceMap[device.ConnectionId] = device.DeviceName;
         _linkStatusMap[device.DeviceName] = new DeviceLinkStatus { DomainAvailable = true, P2PAvailable = false };
-        /* Console.WriteLine($"[ConnectionManager] Device mapped: {device.DeviceName} (ID: {device.DeviceId}) -> Connection {device.ConnectionId}"); */
         DevicesChanged?.Invoke(device.DeviceName);
         LinkStatusChanged?.Invoke(device.DeviceName);
     }
@@ -35,12 +36,37 @@ public class ConnectionManager
     {
         if (_connectionToDeviceMap.TryRemove(connectionId, out var deviceName))
         {
-            _deviceToIdentityMap.TryRemove(deviceName, out _);
-            _linkStatusMap.TryRemove(deviceName, out _);
-            /* Console.WriteLine($"[ConnectionManager] Removed device endpoint: {deviceName}"); */
-            DevicesChanged?.Invoke(deviceName);
-            LinkStatusChanged?.Invoke(deviceName);
+            _connectionMap.TryRemove(connectionId, out _);
+            if (_deviceConnections.TryGetValue(deviceName, out var set))
+            {
+                set.TryRemove(connectionId, out _);
+                if (set.IsEmpty)
+                {
+                    _deviceConnections.TryRemove(deviceName, out _);
+                    _deviceToIdentityMap.TryRemove(deviceName, out _);
+                    _linkStatusMap.TryRemove(deviceName, out _);
+                    DevicesChanged?.Invoke(deviceName);
+                    LinkStatusChanged?.Invoke(deviceName);
+                }
+            }
         }
+    }
+
+    public List<string> GetConnectionIdsForDevice(string deviceName)
+    {
+        if (_deviceConnections.TryGetValue(deviceName, out var set))
+            return set.Keys.ToList();
+        return new List<string>();
+    }
+
+    public List<DeviceIdentity> GetAllConnectionsForDevice(string deviceName)
+    {
+        var ids = GetConnectionIdsForDevice(deviceName);
+        var list = new List<DeviceIdentity>();
+        foreach (var id in ids)
+            if (_connectionMap.TryGetValue(id, out var ident))
+                list.Add(ident);
+        return list;
     }
 
     public bool TryGetConnectionId(string deviceName, out string connectionId)
