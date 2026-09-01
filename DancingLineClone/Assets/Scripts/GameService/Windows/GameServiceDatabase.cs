@@ -1655,8 +1655,8 @@ class DatabaseManager {
             string dbPath = System.IO.Path.Combine(BaseDir, "."+deviceId+".db");
             if(!System.IO.File.Exists(dbPath)) return "{\"exists\":false,\"currentNode\":{},\"children\":[]}";
             try{
-                var asm = System.Reflection.Assembly.Load("Mono.Data.Sqlite");
-                var connType = asm.GetType("Mono.Data.Sqlite.SqliteConnection");
+                var asm = System.Reflection.Assembly.Load("Microsoft.Data.Sqlite");
+                var connType = asm.GetType("Microsoft.Data.Sqlite.SqliteConnection");
                 var conn = System.Activator.CreateInstance(connType, new object[]{"Data Source="+dbPath});
                 connType.GetMethod("Open").Invoke(conn, null);
                 var cmd = connType.GetMethod("CreateCommand").Invoke(conn, null);

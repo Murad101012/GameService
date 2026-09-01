@@ -1059,15 +1059,25 @@ app.MapPost("/api/windows-actions/{id}/enabled", async (string id, HttpContext c
     Console.WriteLine($"[WindowsActions] TOGGLE {id} enabled={enabled} ok={ok}");
     return ok? Results.Ok(new{success=true, enabled}): Results.NotFound();
 });
-app.MapGet("/api/windows-database/{pc}/stats", (string pc, ConnectionManager cm) =>
+app.MapGet("/api/windows-database/{pc}/stats", async (string pc, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext) =>
 {
     pc=Uri.UnescapeDataString(pc);
-    // Return cached partitions directly without SignalR invoke to avoid disconnect on Refresh
-    // Real stats are pushed by Database.exe via ReportDatabaseStats every 10s and cached in _dbStatsCache
-    if (_dbStatsCache.TryGetValue(pc, out var cached)) return Results.Ok(cached);
     var connIds = cm.GetConnectionIdsForDevice(pc);
     if (!connIds.Any()) return Results.Ok(new { total=0, devices= new object[]{}, partitions= new object[]{ new { name="C:\\", total=64078475264L, free=27772272640L, used=36306202624L }, new { name="E:\\", total=32211202048L, free=32139239424L, used=71962624L } }, note="PC not connected, fallback C+E" });
-    // Fallback with known VM partitions so UI never shows 0 and no SignalR timeout
+    // Try live stats with short timeout, fallback to cached if fails
+    foreach (var cid in connIds)
+    {
+        try {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var resp = await hubContext.Clients.Client(cid).InvokeCoreAsync<JsonElement>("GetDatabaseStats", Array.Empty<object>(), cts.Token);
+            if (resp.ValueKind == JsonValueKind.Object && resp.TryGetProperty("error", out _)) continue;
+            Console.WriteLine($"[WindowsDB] stats from {pc} via {cid} {resp}");
+            // Cache for fallback
+            _dbStatsCache[pc] = resp;
+            return Results.Ok(resp);
+        } catch (Exception ex) { Console.WriteLine($"[WindowsDB] stats via {cid} failed {ex.Message}"); }
+    }
+    if (_dbStatsCache.TryGetValue(pc, out var cached2)) return Results.Ok(cached2);
     return Results.Ok(new { total=0, devices= new object[]{}, partitions= new object[]{ new { name="C:\\", total=64078475264L, free=27772272640L, used=36306202624L }, new { name="E:\\", total=32211202048L, free=32139239424L, used=71962624L } }, note="Fallback C+E (DB empty)" });
 });
 app.MapPost("/api/windows-database/{pc}/browse", async (string pc, HttpContext ctx, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext) =>

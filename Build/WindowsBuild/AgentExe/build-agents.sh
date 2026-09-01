@@ -15,12 +15,21 @@ build_one() {
   local out="$2"
   local name="$3"
   echo "Building $name: $src -> $out"
+  # Use mcs with Microsoft.Data.Sqlite (needs e_sqlite3 native)
+  local extra_refs="-r:System -r:System.Core -r:System.Management -r:System.Drawing -r:System.Data"
+  # Try Microsoft.Data.Sqlite if available in OUT_DIR or WIN_DIR
+  if [[ -f "$OUT_DIR/Microsoft.Data.Sqlite.dll" ]]; then
+    extra_refs="$extra_refs -r:$OUT_DIR/Microsoft.Data.Sqlite.dll -r:$OUT_DIR/SQLitePCLRaw.core.dll -r:$OUT_DIR/SQLitePCLRaw.provider.e_sqlite3.dll -r:$OUT_DIR/SQLitePCLRaw.batteries_v2.dll"
+  elif [[ -f "$WIN_DIR/../../Build/WindowsBuild/AgentExe/Microsoft.Data.Sqlite.dll" ]]; then
+    extra_refs="$extra_refs -r:$WIN_DIR/../../Build/WindowsBuild/AgentExe/Microsoft.Data.Sqlite.dll -r:$WIN_DIR/../../Build/WindowsBuild/AgentExe/SQLitePCLRaw.core.dll -r:$WIN_DIR/../../Build/WindowsBuild/AgentExe/SQLitePCLRaw.provider.e_sqlite3.dll -r:$WIN_DIR/../../Build/WindowsBuild/AgentExe/SQLitePCLRaw.batteries_v2.dll"
+  else
+    extra_refs="$extra_refs -r:Mono.Data.Sqlite -r:System.Data"
+  fi
   if command -v mcs >/dev/null 2>&1; then
-    # Prefer mcs for Mono.Data.Sqlite support
-    mcs -target:exe -out:"$out" -r:System -r:System.Core -r:System.Management -r:System.Drawing -r:Mono.Data.Sqlite -r:System.Data "$src" 2>&1 || {
+    mcs -target:exe -out:"$out" $extra_refs "$src" 2>&1 || {
       echo "mcs failed for $name, trying csc..."
       if command -v csc >/dev/null 2>&1; then
-        csc /nologo /target:exe /out:"$out" /r:System.dll,System.Core.dll /r:System.Management.dll /r:System.Drawing.dll /r:Mono.Data.Sqlite.dll /r:System.Data.dll "$src"
+        csc /nologo /target:exe /out:"$out" /r:System.dll,System.Core.dll /r:System.Management.dll /r:System.Drawing.dll /r:Microsoft.Data.Sqlite.dll /r:System.Data.dll "$src"
       else
         return 1
       fi
