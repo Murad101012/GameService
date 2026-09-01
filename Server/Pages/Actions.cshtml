@@ -626,11 +626,20 @@
 
     async function toggleAction(id, enabled) {
         try {
-            await fetchJson(`/api/actions/${id}/enabled`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled })
-            });
+            if (isWindowsSelected()) {
+                await fetchJson(`/api/windows-actions/${id}/enabled`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled })
+                });
+                showToast(enabled ? 'Enabled' : 'Disabled', 'ok');
+            } else {
+                await fetchJson(`/api/actions/${id}/enabled`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled })
+                });
+            }
             refreshActions();
         } catch (e) {
             showToast('Failed: ' + e.message, 'err');
@@ -640,7 +649,12 @@
     async function removeAction(id) {
         if (!confirm('Remove this action?')) return;
         try {
-            await fetchJson(`/api/actions/${id}`, { method: 'DELETE' });
+            if (isWindowsSelected()) {
+                await fetchJson(`/api/windows-actions/${id}`, { method: 'DELETE' });
+                showToast('Deleted from Windows', 'ok');
+            } else {
+                await fetchJson(`/api/actions/${id}`, { method: 'DELETE' });
+            }
             refreshActions();
         } catch (e) {
             showToast('Failed: ' + e.message, 'err');

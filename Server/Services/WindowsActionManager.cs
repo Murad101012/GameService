@@ -40,6 +40,7 @@ public class WindowsActionManager
 
     public List<WindowsActionEntry> GetAll() { lock(_lock) return _actions.ToList(); }
     public List<WindowsActionEntry> GetByPc(string pcName) { lock(_lock) return _actions.Where(a=>a.OwnerPc==pcName || string.IsNullOrEmpty(a.OwnerPc)).ToList(); }
+    public WindowsActionEntry? GetById(string id) { lock(_lock) return _actions.FirstOrDefault(a=>a.Id==id); }
     public void Upsert(WindowsActionEntry entry)
     {
         lock(_lock)
@@ -50,4 +51,15 @@ public class WindowsActionManager
         }
     }
     public bool Delete(string id) { lock(_lock){ var removed=_actions.RemoveAll(a=>a.Id==id)>0; if(removed) Save(); return removed; } }
+    public bool SetEnabled(string id, bool enabled)
+    {
+        lock(_lock)
+        {
+            var idx = _actions.FindIndex(a=>a.Id==id);
+            if (idx<0) return false;
+            _actions[idx].Enabled = enabled;
+            Save();
+            return true;
+        }
+    }
 }

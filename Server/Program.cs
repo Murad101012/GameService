@@ -958,17 +958,107 @@ app.MapPost("/api/windows-actions", async (HttpContext ctx, WindowsActionManager
         return Results.Ok(entry);
     } catch (Exception ex) { return Results.Json(new {message=ex.Message}, statusCode:500); }
 });
-app.MapPut("/api/windows-actions/{id}", async (string id, HttpContext ctx, WindowsActionManager wam) =>
+app.MapPut("/api/windows-actions/{id}", async (string id, HttpContext ctx, WindowsActionManager wam, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext) =>
 {
     var body = await new StreamReader(ctx.Request.Body).ReadToEndAsync();
     var entry = JsonSerializer.Deserialize<WindowsActionEntry>(body, new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
     if (entry==null) return Results.BadRequest("invalid");
     entry.Id=id;
+    // proxy to PC
+    if (!string.IsNullOrEmpty(entry.OwnerPc))
+    {
+        var connIds = cm.GetConnectionIdsForDevice(entry.OwnerPc);
+        foreach (var cid in connIds)
+        {
+            try {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                var resp = await hubContext.Clients.Client(cid).InvokeCoreAsync<JsonElement>("UpdateWindowsAction", new object[]{body}, cts.Token);
+                Console.WriteLine($"[WindowsActions] proxied UpdateWindowsAction to {entry.OwnerPc} ({cid}) resp {resp}");
+                break;
+            } catch (Exception ex) { Console.WriteLine($"[WindowsActions] proxy Update to {entry.OwnerPc} via {cid} failed {ex.Message}"); }
+        }
+    }
     wam.Upsert(entry);
     Console.WriteLine($"[WindowsActions] PUT {id}");
     return Results.Ok(entry);
 });
-app.MapDelete("/api/windows-actions/{id}", (string id, WindowsActionManager wam) => { var ok=wam.Delete(id); Console.WriteLine($"[WindowsActions] DELETE {id} ok={ok}"); return ok? Results.Ok(new{success=true}): Results.NotFound(); });
+app.MapDelete("/api/windows-actions/{id}", async (string id, WindowsActionManager wam, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext) =>
+{
+    var entry = wam.GetById(id);
+    string ownerPc = entry?.OwnerPc ?? "";
+    if (!string.IsNullOrEmpty(ownerPc))
+    {
+        var connIds = cm.GetConnectionIdsForDevice(ownerPc);
+        foreach (var cid in connIds)
+        {
+            try {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                var resp = await hubContext.Clients.Client(cid).InvokeCoreAsync<JsonElement>("DeleteWindowsAction", new object[]{id}, cts.Token);
+                Console.WriteLine($"[WindowsActions] proxied DeleteWindowsAction to {ownerPc} ({cid}) resp {resp}");
+                // if client confirms, break
+                if (resp.ValueKind == JsonValueKind.Object && resp.TryGetProperty("success", out var succ) && succ.GetBoolean()) break;
+            } catch (Exception ex) { Console.WriteLine($"[WindowsActions] proxy Delete to {ownerPc} via {cid} failed {ex.Message}"); }
+        }
+    }
+    else
+    {
+        // broadcast to all Windows PCs if no owner
+        var allPcs = cm.GetAllDeviceNames().Where(n=> n.StartsWith("DESKTOP", StringComparison.OrdinalIgnoreCase) || n.Contains("_PC")).ToList();
+        foreach (var pc in allPcs)
+        {
+            foreach (var cid in cm.GetConnectionIdsForDevice(pc))
+            {
+                try {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    await hubContext.Clients.Client(cid).InvokeCoreAsync<JsonElement>("DeleteWindowsAction", new object[]{id}, cts.Token);
+                } catch {}
+            }
+        }
+    }
+    var ok=wam.Delete(id);
+    Console.WriteLine($"[WindowsActions] DELETE {id} ok={ok} owner={ownerPc}");
+    return ok? Results.Ok(new{success=true}): Results.NotFound();
+});
+app.MapPost("/api/windows-actions/{id}/enabled", async (string id, HttpContext ctx, WindowsActionManager wam, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext) =>
+{
+    var body = await new StreamReader(ctx.Request.Body).ReadToEndAsync();
+    var doc = JsonSerializer.Deserialize<JsonElement>(body);
+    bool enabled = doc.TryGetProperty("enabled", out var e) ? e.GetBoolean() : true;
+    var entry = wam.GetById(id);
+    if (entry == null) return Results.NotFound();
+    string ownerPc = entry.OwnerPc;
+    // proxy to PC
+    if (!string.IsNullOrEmpty(ownerPc))
+    {
+        var connIds = cm.GetConnectionIdsForDevice(ownerPc);
+        foreach (var cid in connIds)
+        {
+            try {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                var resp = await hubContext.Clients.Client(cid).InvokeCoreAsync<JsonElement>("ToggleWindowsAction", new object[]{id, enabled}, cts.Token);
+                Console.WriteLine($"[WindowsActions] proxied ToggleWindowsAction to {ownerPc} ({cid}) enabled={enabled} resp {resp}");
+                break;
+            } catch (Exception ex) { Console.WriteLine($"[WindowsActions] proxy Toggle to {ownerPc} via {cid} failed {ex.Message}"); }
+        }
+    }
+    else
+    {
+        var allPcs = cm.GetAllDeviceNames().Where(n=> n.StartsWith("DESKTOP", StringComparison.OrdinalIgnoreCase) || n.Contains("_PC")).ToList();
+        foreach (var pc in allPcs)
+        {
+            foreach (var cid in cm.GetConnectionIdsForDevice(pc))
+            {
+                try {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    await hubContext.Clients.Client(cid).InvokeCoreAsync<JsonElement>("ToggleWindowsAction", new object[]{id, enabled}, cts.Token);
+                } catch {}
+            }
+        }
+    }
+    var ok = wam.SetEnabled(id, enabled);
+    Console.WriteLine($"[WindowsActions] TOGGLE {id} enabled={enabled} ok={ok}");
+    return ok? Results.Ok(new{success=true, enabled}): Results.NotFound();
+});
 app.MapGet("/api/windows-database/{pc}/stats", (string pc, ConnectionManager cm) =>
 {
     pc=Uri.UnescapeDataString(pc);

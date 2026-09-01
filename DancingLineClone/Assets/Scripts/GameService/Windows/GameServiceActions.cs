@@ -445,6 +445,38 @@ class GameServiceActions
                 await SendWsText(ssl, resp);
                 return;
             }
+            if (target == "UpdateWindowsAction") {
+                string payload = ExtractJsonString(json, "arguments", 0);
+                Log("UpdateWindowsAction payload len "+(payload?.Length??0), "MESSAGE");
+                try { WindowsActionStore.UpsertJson(payload); } catch (Exception ex) { Log("UpdateWindowsAction upsert ex "+ex.Message, "ERROR"); }
+                string resp = "{\"type\":3,\"invocationId\":\"" + EscapeJson(invocationId) + "\",\"result\":{\"success\":true}}\x1e";
+                await SendWsText(ssl, resp);
+                return;
+            }
+            if (target == "DeleteWindowsAction") {
+                string delId = ExtractJsonString(json, "arguments", 0);
+                Log("DeleteWindowsAction id="+delId, "MESSAGE");
+                bool ok = false;
+                try { ok = WindowsActionStore.DeleteJson(delId); } catch (Exception ex) { Log("DeleteWindowsAction ex "+ex.Message, "ERROR"); }
+                string resp = "{\"type\":3,\"invocationId\":\"" + EscapeJson(invocationId) + "\",\"result\":{\"success\":"+(ok?"true":"false")+"}}\x1e";
+                await SendWsText(ssl, resp);
+                Log("DeleteWindowsAction done ok="+ok, "SUCCESS");
+                return;
+            }
+            if (target == "ToggleWindowsAction") {
+                string togId = ExtractJsonString(json, "arguments", 0);
+                string togValStr = ExtractJsonString(json, "arguments", 1);
+                bool togVal = togValStr=="true" || togValStr=="True";
+                // Also handle bool directly via ExtractJsonBool
+                try { togVal = ExtractJsonBool(json, "arguments", 1); } catch {}
+                Log("ToggleWindowsAction id="+togId+" enabled="+togVal, "MESSAGE");
+                bool ok = false;
+                try { ok = WindowsActionStore.ToggleJson(togId, togVal); } catch (Exception ex) { Log("ToggleWindowsAction ex "+ex.Message, "ERROR"); }
+                string resp = "{\"type\":3,\"invocationId\":\"" + EscapeJson(invocationId) + "\",\"result\":{\"success\":"+(ok?"true":"false")+"}}\x1e";
+                await SendWsText(ssl, resp);
+                Log("ToggleWindowsAction done ok="+ok, "SUCCESS");
+                return;
+            }
             if (target == "GetSeenDevices") {
                 string seen = SeenDevicesManager.GetJson();
                 string resp = "{\"type\":3,\"invocationId\":\"" + EscapeJson(invocationId) + "\",\"result\":" + seen + "}\x1e";
@@ -1737,15 +1769,107 @@ class WindowsActionStore {
     public static void UpsertJson(string payload) {
         try {
             System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(PathFile));
+            // Try to handle update: if payload contains Id, remove old entry with same Id first
+            string id = ExtractId(payload);
             string cur = GetAllJson();
+            if (!string.IsNullOrEmpty(id) && cur.Contains(id)) {
+                DeleteJson(id);
+                cur = GetAllJson();
+            }
             if (cur.Trim()=="[]") System.IO.File.WriteAllText(PathFile, "["+payload+"]");
             else {
                 cur = cur.Trim(); if(cur.EndsWith("]")) cur = cur.Substring(0, cur.Length-1);
                 if (cur.EndsWith("[")) System.IO.File.WriteAllText(PathFile, cur+payload+"]");
                 else System.IO.File.WriteAllText(PathFile, cur+","+payload+"]");
             }
-            GameServiceActions.Log("WindowsActionStore upsert ok len="+payload.Length, "SUCCESS");
+            GameServiceActions.Log("WindowsActionStore upsert ok len="+payload.Length+" id="+id, "SUCCESS");
         } catch (System.Exception ex) { GameServiceActions.Log("WindowsActionStore upsert ex "+ex.Message, "ERROR"); throw; }
+    }
+    public static bool DeleteJson(string id) {
+        try {
+            string cur = GetAllJson();
+            if (cur.Trim()=="[]") return false;
+            // Simple JSON array manipulation: split objects by "},{"
+            // Find and remove object containing this id
+            int idx = cur.IndexOf(id);
+            if (idx<0) return false;
+            // Find object boundaries
+            int objStart = cur.LastIndexOf('{', idx);
+            int objEnd = cur.IndexOf('}', idx);
+            if (objStart<0 || objEnd<0) return false;
+            // Expand to include surrounding commas/brackets
+            // Find next char after objEnd
+            string before = cur.Substring(0, objStart);
+            string after = cur.Substring(objEnd+1);
+            // Handle commas
+            before = before.Trim();
+            after = after.Trim();
+            if (before.EndsWith(",")) before = before.Substring(0, before.Length-1);
+            else if (after.StartsWith(",")) after = after.Substring(1);
+            // Handle array brackets
+            string newJson = before + after;
+            // Clean up empty array cases
+            newJson = newJson.Replace("[,", "[").Replace(",]", "]").Replace(",,", ",");
+            if (newJson.Trim()=="[" || newJson.Trim()=="") newJson = "[]";
+            // Ensure valid JSON array
+            if (!newJson.Trim().StartsWith("[")) newJson = "[" + newJson;
+            if (!newJson.Trim().EndsWith("]")) newJson = newJson + "]";
+            newJson = newJson.Replace("[,", "[").Replace(",]", "]");
+            System.IO.File.WriteAllText(PathFile, newJson);
+            GameServiceActions.Log("WindowsActionStore delete ok id="+id, "SUCCESS");
+            return true;
+        } catch (System.Exception ex) { GameServiceActions.Log("WindowsActionStore delete ex "+ex.Message, "ERROR"); return false; }
+    }
+    public static bool ToggleJson(string id, bool enabled) {
+        try {
+            string cur = GetAllJson();
+            if (cur.Contains("\"Enabled\":") || cur.Contains("\"enabled\":") || cur.Contains("\"Enabled\":")) {
+                // Simple replace of Enabled field for this id
+                int idx = cur.IndexOf(id);
+                if (idx<0) return false;
+                int objStart = cur.LastIndexOf('{', idx);
+                int objEnd = cur.IndexOf('}', idx);
+                if (objStart<0 || objEnd<0) return false;
+                string obj = cur.Substring(objStart, objEnd - objStart + 1);
+                string newObj;
+                if (obj.Contains("\"Enabled\":")) {
+                    int idx2 = obj.IndexOf("\"Enabled\":");
+                    int colon2 = obj.IndexOf(':', idx2);
+                    int comma2 = obj.IndexOf(',', colon2);
+                    int brace2 = obj.IndexOf('}', colon2);
+                    int end2 = (comma2>0 && comma2 < brace2) ? comma2 : brace2;
+                    newObj = obj.Substring(0, colon2+1) + enabled.ToString().ToLower() + obj.Substring(end2);
+                } else if (obj.Contains("\"enabled\":")) {
+                    int idx2 = obj.IndexOf("\"enabled\":");
+                    int colon2 = obj.IndexOf(':', idx2);
+                    int comma2 = obj.IndexOf(',', colon2);
+                    int brace2 = obj.IndexOf('}', colon2);
+                    int end2 = (comma2>0 && comma2 < brace2) ? comma2 : brace2;
+                    newObj = obj.Substring(0, colon2+1) + enabled.ToString().ToLower() + obj.Substring(end2);
+                }
+                else {
+                    // Insert Enabled field
+                    newObj = obj.TrimEnd(new char[]{'}'}) + ",\"Enabled\":" + enabled.ToString().ToLower() + "}";
+                }
+                string newJson = cur.Substring(0, objStart) + newObj + cur.Substring(objEnd+1);
+                System.IO.File.WriteAllText(PathFile, newJson);
+                GameServiceActions.Log("WindowsActionStore toggle ok id="+id+" enabled="+enabled, "SUCCESS");
+                return true;
+            }
+            return false;
+        } catch (System.Exception ex) { GameServiceActions.Log("WindowsActionStore toggle ex "+ex.Message, "ERROR"); return false; }
+    }
+    private static string ExtractId(string json) {
+        try {
+            int idx = json.IndexOf("\"Id\"");
+            if (idx<0) idx = json.IndexOf("\"id\"");
+            if (idx<0) return "";
+            int colon = json.IndexOf(':', idx);
+            int q1 = json.IndexOf('"', colon);
+            int q2 = json.IndexOf('"', q1+1);
+            if (q1>=0 && q2>q1) return json.Substring(q1+1, q2-q1-1);
+        } catch {}
+        return "";
     }
 }
 
