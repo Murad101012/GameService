@@ -1622,10 +1622,23 @@ class DatabaseManager {
             foreach(var d in System.IO.DriveInfo.GetDrives()){
                 try{
                     GameServiceDatabase.Log("GetStatsJson drive "+d.Name+" type="+d.DriveType+" ready="+d.IsReady, "MESSAGE");
-                    if(d.DriveType==System.IO.DriveType.Fixed && d.IsReady){
+                    // Include all ready drives with Fixed type, plus any NTFS internal partitions (E: etc.)
+                    bool isFixed = d.DriveType==System.IO.DriveType.Fixed;
+                    // Also consider IsReady and TotalSize > 0 to filter out empty CDROM
+                    if(isFixed && d.IsReady && d.TotalSize>0){
                         if(!first) parts+=",";
-                        parts+= "{\"name\":\""+d.Name+"\",\"total\":"+d.TotalSize+",\"free\":"+d.AvailableFreeSpace+",\"used\":"+(d.TotalSize-d.AvailableFreeSpace)+"}";
+                        string escName = GameServiceDatabase.EscapeJson(d.Name);
+                        parts+= "{\"name\":\""+escName+"\",\"total\":"+d.TotalSize+",\"free\":"+d.AvailableFreeSpace+",\"used\":"+(d.TotalSize-d.AvailableFreeSpace)+"}";
                         first=false; partCount++;
+                    } else if (d.IsReady && d.TotalSize>0 && d.DriveType!=System.IO.DriveType.CDRom && d.DriveType!=System.IO.DriveType.Network) {
+                        // Fallback: include any ready drive with size >0 that is not CDRom/Network (covers newly created E:)
+                        try{
+                            if(!first) parts+=",";
+                            string escName2 = GameServiceDatabase.EscapeJson(d.Name);
+                            parts+= "{\"name\":\""+escName2+"\",\"total\":"+d.TotalSize+",\"free\":"+d.AvailableFreeSpace+",\"used\":"+(d.TotalSize-d.AvailableFreeSpace)+"}";
+                            first=false; partCount++;
+                            GameServiceDatabase.Log("GetStatsJson added fallback drive "+d.Name, "MESSAGE");
+                        }catch{}
                     }
                 }catch(System.Exception ex){ GameServiceDatabase.Log("GetStatsJson drive ex "+ex.Message, "ERROR"); }
             }
