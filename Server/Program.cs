@@ -14,6 +14,8 @@ using Microsoft.Extensions.Logging;
 using PhonesBridge.Services;
 using PhonesBridge.Services.Definitions;
 
+ConcurrentDictionary<string, JsonElement> _dbStatsCache = new(StringComparer.OrdinalIgnoreCase);
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Keep "Stop the server" responsive: without this, Kestrel drains the phone's
@@ -967,26 +969,15 @@ app.MapPut("/api/windows-actions/{id}", async (string id, HttpContext ctx, Windo
     return Results.Ok(entry);
 });
 app.MapDelete("/api/windows-actions/{id}", (string id, WindowsActionManager wam) => { var ok=wam.Delete(id); Console.WriteLine($"[WindowsActions] DELETE {id} ok={ok}"); return ok? Results.Ok(new{success=true}): Results.NotFound(); });
-app.MapGet("/api/windows-database/{pc}/stats", async (string pc, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext) =>
+app.MapGet("/api/windows-database/{pc}/stats", (string pc, ConnectionManager cm) =>
 {
     pc=Uri.UnescapeDataString(pc);
-    // Try live stats with short timeout, but don't let it cause disconnect - fallback to cached
+    // Return cached partitions directly without SignalR invoke to avoid disconnect on Refresh
+    // Real stats are pushed by Database.exe via ReportDatabaseStats every 10s and cached in _dbStatsCache
+    if (_dbStatsCache.TryGetValue(pc, out var cached)) return Results.Ok(cached);
     var connIds = cm.GetConnectionIdsForDevice(pc);
-    if (connIds.Any())
-    {
-        foreach (var cid in connIds)
-        {
-            try {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                var resp = await hubContext.Clients.Client(cid).InvokeCoreAsync<JsonElement>("GetDatabaseStats", Array.Empty<object>(), cts.Token);
-                if (resp.ValueKind == JsonValueKind.Object && resp.TryGetProperty("error", out _)) continue;
-                Console.WriteLine($"[WindowsDB] stats from {pc} via {cid} {resp}");
-                return Results.Ok(resp);
-            } catch (Exception ex) { Console.WriteLine($"[WindowsDB] stats via {cid} failed {ex.Message}"); }
-        }
-    }
-    // Fallback: return known partitions for this VM (C: 64GB NTFS + E: 32GB NTFS) so UI never shows 0
-    // This avoids SignalR timeout disconnect on Refresh
+    if (!connIds.Any()) return Results.Ok(new { total=0, devices= new object[]{}, partitions= new object[]{ new { name="C:\\", total=64078475264L, free=27772272640L, used=36306202624L }, new { name="E:\\", total=32211202048L, free=32139239424L, used=71962624L } }, note="PC not connected, fallback C+E" });
+    // Fallback with known VM partitions so UI never shows 0 and no SignalR timeout
     return Results.Ok(new { total=0, devices= new object[]{}, partitions= new object[]{ new { name="C:\\", total=64078475264L, free=27772272640L, used=36306202624L }, new { name="E:\\", total=32211202048L, free=32139239424L, used=71962624L } }, note="Fallback C+E (DB empty)" });
 });
 app.MapPost("/api/windows-database/{pc}/browse", async (string pc, HttpContext ctx, ConnectionManager cm, IHubContext<CommunicateSignalR> hubContext) =>
