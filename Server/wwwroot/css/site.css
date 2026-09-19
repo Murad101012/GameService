@@ -1566,6 +1566,7 @@ body.ai-nsfw #ai-smolvlm-sections { display: none; }
 .run-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .run-status { font-size: 0.75rem; font-weight: 700; padding: 2px 10px; border-radius: 999px; }
 .run-status.running { background: rgba(255,159,67,0.15); color: var(--amber); }
+.run-status.paused { background: rgba(108,140,255,0.18); color: #8ca8ff; }
 .run-status.done { background: rgba(80,227,194,0.15); color: var(--accent); }
 .run-status.failed { background: rgba(255,107,107,0.15); color: var(--red); }
 .run-log { font-size: 0.78rem; color: var(--text2); background: var(--surface1); border: 1px solid var(--glass-border); border-radius: var(--radius-sm); padding: 8px 10px; max-height: 170px; overflow-y: auto; white-space: pre-wrap; }

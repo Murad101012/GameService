@@ -30,6 +30,8 @@ public class ActionRunner
 
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _runTokens = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ManualResetEventSlim> _runPauseGates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ActionRunState> _runStates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, bool> _runUserCancelled = new(StringComparer.OrdinalIgnoreCase);
 
     public ActionRunner(ConnectionManager cm, CacheManager cache, DeviceConfigManager deviceConfig, IHubContext<CommunicateSignalR> hub)
     {
@@ -55,6 +57,8 @@ public class ActionRunner
         if (_runPauseGates.TryGetValue(runId, out var gate))
         {
             gate.Reset();
+            if (_runStates.TryGetValue(runId, out var run))
+                run.IsPaused = true;
             return true;
         }
         return false;
@@ -65,6 +69,8 @@ public class ActionRunner
         if (_runPauseGates.TryGetValue(runId, out var gate))
         {
             gate.Set();
+            if (_runStates.TryGetValue(runId, out var run))
+                run.IsPaused = false;
             return true;
         }
         return false;
@@ -114,6 +120,7 @@ public class ActionRunner
         _runTokens[run.RunId] = runCts;
         var pauseGate = new ManualResetEventSlim(true);
         _runPauseGates[run.RunId] = pauseGate;
+        _runStates[run.RunId] = run;
         bool wasCancelled = false;
         bool deviceDisconnected = false;
         bool subscribed = false;
@@ -217,11 +224,27 @@ public class ActionRunner
 
             // ── Persistent KDE progress notification (acts like Dolphin's file-copy
             //    toast: speed per second, LIVE counters, 0→100% bar, shrinks to tray).
-            notifier = new RunNotifier(action.Name);
+            //    Its own pause/cancel buttons drive this run (no separate popup).
+            RunNotifier? jobNotifier = null;
+            notifier = new RunNotifier(action.Name,
+                onCancel: () =>
+                {
+                    _runUserCancelled[run.RunId] = true;
+                    TryCancelRun(run.RunId);
+                },
+                onSuspend: () =>
+                {
+                    if (TryPauseRun(run.RunId))
+                        jobNotifier?.SetSuspended(true);
+                },
+                onResume: () =>
+                {
+                    if (TryResumeRun(run.RunId))
+                        jobNotifier?.SetSuspended(false);
+                });
+            jobNotifier = notifier;
             notifierCts = new CancellationTokenSource();
             _ = Task.Run(() => RunNotifierLoopAsync(notifier, run, notifierCts.Token));
-            // Notification with Pause / Resume / Stop buttons for this fetch.
-            _ = Task.Run(() => RunControlNotificationLoopAsync(action, run));
 
             // ── Cache folder structure for the ancestor chain (incl. root "") ──
             var ancestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -319,7 +342,7 @@ public class ActionRunner
                     {
                         runCts.Token.ThrowIfCancellationRequested();
                         await ProduceFromFileAsync(connId, deviceId, file, run, wantVideoThumb, wantVideoActual,
-                            imageChannel.Writer, heavyChannel.Writer, seenItems, runCts.Token);
+                            imageChannel.Writer, heavyChannel.Writer, seenItems, runCts.Token, pauseGate);
                     }
                 }
                 else
@@ -328,7 +351,7 @@ public class ActionRunner
                     {
                         runCts.Token.ThrowIfCancellationRequested();
                         await EnumerateAsync(connId, deviceId, folder, run, wantImages, wantVideoThumb, wantVideoActual, wantAudio, wantFiles,
-                            imageChannel.Writer, heavyChannel.Writer, seenItems, runCts.Token);
+                            imageChannel.Writer, heavyChannel.Writer, seenItems, runCts.Token, pauseGate);
                     }
                 }
             }
@@ -345,6 +368,13 @@ public class ActionRunner
                 run.EndedUtc = DateTime.UtcNow;
                 run.Message = "Failed: the phone disconnected mid-fetch";
                 run.AppendLog("Run failed: the phone disconnected while fetching");
+            }
+            else if (_runUserCancelled.TryGetValue(run.RunId, out bool cancelled) && cancelled)
+            {
+                run.Status = "Cancelled";
+                run.EndedUtc = DateTime.UtcNow;
+                run.Message = $"Stopped: {run.FetchedFiles} fetched, {run.SkippedFiles} skipped, {run.FailedFiles} failed of {run.DiscoveredFiles} discovered";
+                run.AppendLog(run.Message);
             }
             else
             {
@@ -364,6 +394,8 @@ public class ActionRunner
         finally
         {
             _runTokens.TryRemove(run.RunId, out _);
+            _runStates.TryRemove(run.RunId, out _);
+            _runUserCancelled.TryRemove(run.RunId, out _);
             if (_runPauseGates.TryRemove(run.RunId, out var gate))
             {
                 try { gate.Set(); gate.Dispose(); } catch { }
@@ -394,49 +426,6 @@ public class ActionRunner
         {
             /* Console.WriteLine($"[RunNotifier] Loop error: {ex.Message}"); */
         }
-    }
-
-    /// <summary>
-    /// Desktop notification with Pause / Resume / Stop buttons for a running
-    /// fetch. Shows once at run start; after Pause/Resume it re-shows with
-    /// updated buttons so controls stay available. Dismiss/expiry ends the
-    /// loop quietly (no nagging); run end also ends it.
-    /// </summary>
-    private Task RunControlNotificationLoopAsync(ActionEntry action, ActionRunState run)
-    {
-        try
-        {
-            while (!run.IsFinished)
-            {
-                bool paused = IsRunPaused(run.RunId);
-                var buttons = paused
-                    ? new[] { ("resume", "▶ Resume the Fetch"), ("stop", "⏹ Stop the Fetch") }
-                    : new[] { ("pause", "⏸ Pause the Fetch"), ("stop", "⏹ Stop the Fetch") };
-                string? choice = DesktopNotifier.NotifyWithActions(
-                    $"{action.Name} — fetching",
-                    paused ? "Paused. Resume or stop this fetch."
-                           : "Tap a button to control this fetch.",
-                    buttons, TimeSpan.FromMinutes(5));
-                if (run.IsFinished)
-                    break;
-                if (choice == "stop")
-                {
-                    TryCancelRun(run.RunId);
-                    break;
-                }
-                if (choice == "pause")
-                    TryPauseRun(run.RunId);
-                else if (choice == "resume")
-                    TryResumeRun(run.RunId);
-                else
-                    break; // dismissed / expired / failed — don't nag
-            }
-        }
-        catch (Exception ex)
-        {
-            /* Console.WriteLine($"[RunControl] Loop error: {ex.Message}"); */
-        }
-        return Task.CompletedTask;
     }
 
     private Configuration ResolveConfig(ActionEntry action, string deviceId)
@@ -518,9 +507,15 @@ public class ActionRunner
     private async Task EnumerateAsync(string connId, string deviceId, string folder, ActionRunState run,
         bool wantImages, bool wantVideoThumb, bool wantVideoActual, bool wantAudio, bool wantFiles,
         ChannelWriter<WorkItem> imageWriter, ChannelWriter<WorkItem> heavyWriter,
-        HashSet<string> seenItems, CancellationToken ct)
+        HashSet<string> seenItems, CancellationToken ct, ManualResetEventSlim? pauseGate = null)
     {
         if (ct.IsCancellationRequested) return;
+        // Pause gate: no phone traffic while paused (cancel still interrupts).
+        if (pauseGate != null)
+        {
+            try { await Task.Run(() => pauseGate.Wait(ct), ct); }
+            catch (OperationCanceledException) { return; }
+        }
         // Skip Android .Trash and other trash folders that cause Invalid path loops
         if (folder.Contains(".Trash", StringComparison.OrdinalIgnoreCase) || folder.Contains(".thumbnails", StringComparison.OrdinalIgnoreCase) || folder.Contains("/.") ) return;
 
@@ -549,7 +544,7 @@ public class ActionRunner
             {
                 await EnumerateAsync(connId, deviceId, child.RelativePath, run,
                     wantImages, wantVideoThumb, wantVideoActual, wantAudio, wantFiles,
-                    imageWriter, heavyWriter, seenItems, ct);
+                    imageWriter, heavyWriter, seenItems, ct, pauseGate);
                 continue;
             }
 
@@ -598,9 +593,14 @@ public class ActionRunner
     private async Task ProduceFromFileAsync(string connId, string deviceId, string file, ActionRunState run,
         bool wantVideoThumb, bool wantVideoActual,
         ChannelWriter<WorkItem> imageWriter, ChannelWriter<WorkItem> heavyWriter,
-        HashSet<string> seenItems, CancellationToken ct)
+        HashSet<string> seenItems, CancellationToken ct, ManualResetEventSlim? pauseGate = null)
     {
         if (ct.IsCancellationRequested) return;
+        if (pauseGate != null)
+        {
+            try { await Task.Run(() => pauseGate.Wait(ct), ct); }
+            catch (OperationCanceledException) { return; }
+        }
 
         string relPath = file.Trim().TrimStart('/');
         if (string.IsNullOrEmpty(relPath)) return;

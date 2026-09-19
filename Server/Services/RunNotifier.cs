@@ -17,6 +17,9 @@ namespace PhonesBridge.Services;
 public sealed class RunNotifier
 {
     private readonly string _actionName;
+    private readonly Action? _onCancel;
+    private readonly Action? _onSuspend;
+    private readonly Action? _onResume;
     private readonly object _lock = new();
     private Process? _proc;
     private StreamWriter? _writer;
@@ -26,9 +29,15 @@ public sealed class RunNotifier
     private long _lastTick;
     private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public RunNotifier(string actionName)
+    /// <param name="onCancel">Invoked when the job's cancel button is pressed.</param>
+    /// <param name="onSuspend">Invoked when the job's pause button is pressed.</param>
+    /// <param name="onResume">Invoked when the job's resume button is pressed.</param>
+    public RunNotifier(string actionName, Action? onCancel = null, Action? onSuspend = null, Action? onResume = null)
     {
         _actionName = actionName;
+        _onCancel = onCancel;
+        _onSuspend = onSuspend;
+        _onResume = onResume;
     }
 
     public void Start()
@@ -71,6 +80,20 @@ public sealed class RunNotifier
                 if (!string.IsNullOrEmpty(e.Data)) { } // silenced
             };
             _proc.BeginErrorReadLine();
+            // Control lines from jobview.py (__cancel__/__suspend__/__resume__)
+            // when the user presses the job notification's own buttons.
+            _proc.OutputDataReceived += (_, e) =>
+            {
+                try
+                {
+                    string? line = e.Data?.Trim();
+                    if (line == "__cancel__") _onCancel?.Invoke();
+                    else if (line == "__suspend__") _onSuspend?.Invoke();
+                    else if (line == "__resume__") _onResume?.Invoke();
+                }
+                catch { }
+            };
+            _proc.BeginOutputReadLine();
             _writer = _proc.StandardInput;
             _writer.AutoFlush = true;
 
@@ -139,6 +162,20 @@ public sealed class RunNotifier
         }
     }
 
+    /// <summary>Reflect paused state in the job view (pause icon, kept visible).</summary>
+    public void SetSuspended(bool suspended)
+    {
+        lock (_lock)
+        {
+            try
+            {
+                if (!OperatingSystem.IsLinux() || !_started || _finished || _writer == null) return;
+                _writer.WriteLine(JsonSerializer.Serialize(new { suspended }, _jsonOptions));
+            }
+            catch { }
+        }
+    }
+
     /// <summary>Terminate the progress job and show a short-lived result popup.</summary>
     public void Finish(ActionRunState run)
     {
@@ -149,10 +186,29 @@ public sealed class RunNotifier
             {
                 if (OperatingSystem.IsLinux() && _started && !_finished && _writer != null)
                 {
+                    bool stopped = string.Equals(run.Status, "Cancelled", StringComparison.OrdinalIgnoreCase);
+                    if (stopped)
+                    {
+                        // User pressed stop: keep the SAME notification up with a
+                        // "stopped" confirmation before terminating (default
+                        // disappearance afterwards).
+                        var done = new
+                        {
+                            title = $"{_actionName} — stopped",
+                            info = run.Message ?? "Fetch stopped.",
+                            percent = 100
+                        };
+                        try { _writer.WriteLine(JsonSerializer.Serialize(done, _jsonOptions)); } catch { }
+                    }
                     string status = string.Equals(run.Status, "Done", StringComparison.OrdinalIgnoreCase) ? "Finished" : run.Status ?? "Finished";
                     var msg = new { terminate = true, error = 0, message = "" };
                     if (string.Equals(run.Status, "Failed", StringComparison.OrdinalIgnoreCase))
                         msg = new { terminate = true, error = 1, message = run.Message ?? status };
+                    if (stopped)
+                    {
+                        // Let the "stopped" state linger briefly so it is seen.
+                        Monitor.Wait(_lock, TimeSpan.FromSeconds(3));
+                    }
                     _writer.WriteLine(JsonSerializer.Serialize(msg, _jsonOptions));
                     _writer.Close();
                     _finished = true;

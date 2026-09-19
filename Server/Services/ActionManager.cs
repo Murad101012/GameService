@@ -286,6 +286,8 @@ public class ActionRunState
     public string ActionName { get; set; } = "";
     public string DeviceName { get; set; } = "";
     public string Status { get; set; } = "Running"; // Running | Done | Failed | Cancelled
+    /// <summary>True while the user paused a Running run (workers + discovery wait). Not a terminal state.</summary>
+    public bool IsPaused { get; set; }
     public DateTime StartedUtc { get; set; }
     public DateTime? EndedUtc { get; set; }
     public int DiscoveredFiles { get; set; }

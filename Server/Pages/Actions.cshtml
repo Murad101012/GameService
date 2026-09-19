@@ -82,7 +82,7 @@
                             <input id="custom-folder" class="form-select" type="text" placeholder="Custom storage-relative path, e.g. Movies/Clips" style="flex:1" />
                         </div>
                     </div>
-                    <span class="form-hint">Checking Home fetches the whole storage root — all other folders are auto-disabled. For Windows PCs: click order sets priority 1..N (1 = fetch first). Overlap check: if DCIM/Camera (prio 1) is higher than DCIM (prio 3), DCIM will skip Camera.</span>
+                    <span class="form-hint">Checking Home locks the other folders (they stay selected) — the whole storage root is fetched, skipping files already fetched from higher-priority subfolders. Click order sets priority 1..N (1 = fetch first). Overlap check: if DCIM/Camera (prio 1) is higher than DCIM (prio 3), DCIM will skip Camera. Same for Pictures and Home.</span>
                 </div>
 
                 <div class="form-group" id="content-normal">
@@ -1088,7 +1088,9 @@
             if (c === home) return;
             const label = c.closest('label');
             if (homeOn) {
-                c.checked = false;
+                // Locked but KEPT checked: Home's walk covers them, and the
+                // fetch engine skips files already fetched from higher-priority
+                // subfolders. Unchecking Home restores them as-is.
                 c.disabled = true;
                 label.classList.add('disabled');
             } else {
@@ -1104,10 +1106,9 @@
             if (homeOn) customInput.value = '';
         }
         if (homeOn) {
-            // Home checked: it is the only active folder. Reset click order to
-            // just Home and refresh badges (otherwise old numbers stay stuck
-            // on the now-unchecked boxes).
-            winFolderOrder = ['/'];
+            // Home checked: it joins the fetch order at click position (others
+            // stay checked-but-locked above). No order reset.
+            if (!winFolderOrder.includes('/')) winFolderOrder.push('/');
             updateWinPrioBadges();
             return;
         }
@@ -1117,7 +1118,9 @@
                 const c = document.querySelector(`#folder-checks input[value="${child}"]`);
                 const label = c.closest('label');
                 if (p && p.checked) {
-                    c.checked = false;
+                    // Locked but KEPT checked: the parent walk covers this
+                    // child, and already-fetched files are skipped. Unchecking
+                    // the parent restores the child as-is.
                     c.disabled = true;
                     label.classList.add('disabled');
                 } else {
@@ -1264,9 +1267,9 @@
 
             if (!folders.length) { showToast('Select at least one folder.', 'warn'); return; }
 
-            // Home (storage root) supersedes every per-folder selection: it walks the
-            // whole / tree, so the folder list is kept to the single root marker.
-            if (document.getElementById('folder-home').checked) folders = ['/'];
+            // NOTE: no collapsing to ['/'] when Home is checked — the full
+            // ordered list is saved and the fetch engine skips files already
+            // fetched from higher-priority subfolders (shared seenItems set).
 
             // Persist the on-screen priority order (badges): folders are fetched
             // in list order, so the click order becomes the fetch order.
@@ -1419,13 +1422,15 @@
     }
 
     function runHtml(r) {
-        const statusClass = (r.status || '').toLowerCase();
+        const isPaused = !!r.isPaused && (r.status || '').toLowerCase() === 'running';
+        const statusClass = isPaused ? 'paused' : (r.status || '').toLowerCase();
+        const statusText = isPaused ? '⏸ Paused' : (r.status || '');
         const started = r.startedUtc ? new Date(r.startedUtc).toLocaleString() : '—';
         const ended = r.endedUtc ? new Date(r.endedUtc).toLocaleString() : '';
         const log = (r.log || []).map(l => `[${l.timeUtc ? new Date(l.timeUtc).toLocaleTimeString() : ''}] ${l.message}`).join('\n');
         return `<div class="run-item">
             <div class="run-header">
-                <span class="run-status ${statusClass}">${escapeHtml(r.status || '')}</span>
+                <span class="run-status ${statusClass}">${escapeHtml(statusText)}</span>
                 <strong>${escapeHtml(r.actionName)}</strong>
                 <span style="color:var(--text2);font-size:0.8rem">📱 ${escapeHtml(r.deviceName)}</span>
                 <span style="color:var(--text2);font-size:0.78rem">${started}${ended ? ' → ' + ended : ''}</span>
