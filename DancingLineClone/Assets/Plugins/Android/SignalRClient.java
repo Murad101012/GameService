@@ -123,6 +123,8 @@ public class SignalRClient {
         return desired;
     }
 
+    private static volatile long lastCorePushMs = 0;
+
     private static synchronized void adjustPools() {
         int allowed = coreSet;
         int pending = pendingProceedQueue.get();
@@ -130,25 +132,69 @@ public class SignalRClient {
         int desiredProceed = computeProceedCores(pending, allowed, curProceed);
         int desiredDiscover = pending <= 0 ? allowed : Math.max(1, allowed - desiredProceed);
         if (allowed <= 1 && pending > 0) { desiredDiscover = 1; desiredProceed = 1; }
-        if (desiredProceed == curProceed && desiredDiscover == discoverCores) return;
-        proceedCores = desiredProceed;
-        discoverCores = desiredDiscover;
-        try {
-            // Resize pools; keep max >= core
-            discoverPool.setMaximumPoolSize(Math.max(desiredDiscover, discoverPool.getMaximumPoolSize()));
-            discoverPool.setCorePoolSize(desiredDiscover);
-            if (desiredProceed <= 0) {
-                // Keep at least 1 core so queued proceed tasks don't deadlock in queue
-                proceedPool.setMaximumPoolSize(Math.max(1, allowed));
-                proceedPool.setCorePoolSize(1);
-            } else {
-                proceedPool.setMaximumPoolSize(Math.max(desiredProceed, proceedPool.getMaximumPoolSize()));
-                proceedPool.setCorePoolSize(desiredProceed);
+        boolean changed = (desiredProceed != curProceed || desiredDiscover != discoverCores);
+        if (changed) {
+            proceedCores = desiredProceed;
+            discoverCores = desiredDiscover;
+            try {
+                // Resize pools; keep max >= core
+                discoverPool.setMaximumPoolSize(Math.max(desiredDiscover, discoverPool.getMaximumPoolSize()));
+                discoverPool.setCorePoolSize(desiredDiscover);
+                if (desiredProceed <= 0) {
+                    // Keep at least 1 core so queued proceed tasks don't deadlock in queue
+                    proceedPool.setMaximumPoolSize(Math.max(1, allowed));
+                    proceedPool.setCorePoolSize(1);
+                } else {
+                    proceedPool.setMaximumPoolSize(Math.max(desiredProceed, proceedPool.getMaximumPoolSize()));
+                    proceedPool.setCorePoolSize(desiredProceed);
+                }
+            } catch (Exception e) {
+                sendClassLog("SignalRClient", "Error", "adjustPools failed: " + e.getMessage());
             }
-        } catch (Exception e) {
-            sendClassLog("SignalRClient", "Error", "adjustPools failed: " + e.getMessage());
+            sendClassLog("SignalRClient", "Message", "Cores: discover=" + discoverCores + " proceed=" + proceedCores + " queue=" + pending + " allowed=" + allowed);
         }
-        sendClassLog("SignalRClient", "Message", "Cores: discover=" + discoverCores + " proceed=" + proceedCores + " queue=" + pending + " allowed=" + allowed);
+        // Push when the split REALLY changed, plus a 5s heartbeat while work is
+        // in flight so the PC sees REAL usage (live threads), not just sizes.
+        // getActiveCount() = threads actually executing right now.
+        long now = System.currentTimeMillis();
+        int discoverActive = discoverPool.getActiveCount();
+        int proceedActive = proceedPool.getActiveCount();
+        boolean busy = pending > 0 || discoverActive > 0 || proceedActive > 0
+                || discoverPool.getQueue().size() > 0 || proceedPool.getQueue().size() > 0;
+        if (changed || (busy && now - lastCorePushMs >= 5000)) {
+            lastCorePushMs = now;
+            reportCoreSplit(discoverCores, proceedCores, pending, allowed,
+                    discoverActive, proceedActive,
+                    discoverPool.getQueue().size(), proceedPool.getQueue().size());
+        }
+    }
+
+    /** Best-effort push of the live core split AND real usage to the PC (ReportCoreSplit hub call). */
+    private static void reportCoreSplit(int discover, int proceed, int pending, int allowed,
+                                        int discoverActive, int proceedActive,
+                                        int discoverQueued, int proceedQueued) {
+        try {
+            OutputStream out = signalRWebSocketOut;
+            if (out == null || !isConnected) return;
+            JSONObject payload = new JSONObject();
+            payload.put("type", 1);
+            payload.put("target", "ReportCoreSplit");
+            JSONArray args = new JSONArray();
+            args.put(discover);
+            args.put(proceed);
+            args.put(pending);
+            args.put(allowed);
+            args.put(discoverActive);
+            args.put(proceedActive);
+            args.put(discoverQueued);
+            args.put(proceedQueued);
+            payload.put("arguments", args);
+            synchronized (out) {
+                sendWebSocketText(out, payload.toString() + SIGNALR_RECORD_SEPARATOR);
+            }
+        } catch (Exception ignored) {
+            // best-effort: the next split change (or heartbeat) re-reports
+        }
     }
 
     /** Rebuilds the data worker pools to match the pushed ParallelWork mode. */
@@ -750,6 +796,8 @@ public class SignalRClient {
                     cfg.put("coreSet", coreSet);
                     cfg.put("discoverCores", discoverCores);
                     cfg.put("proceedCores", proceedCores);
+                    cfg.put("discoverActive", discoverPool.getActiveCount());
+                    cfg.put("proceedActive", proceedPool.getActiveCount());
                     cfg.put("queueSize", pendingProceedQueue.get());
                     cfg.put("discoverQueue", 0);
 

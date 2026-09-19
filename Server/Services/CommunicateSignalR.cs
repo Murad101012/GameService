@@ -756,4 +756,23 @@ public class CommunicateSignalR : Hub
     public void ReportPendingUploads(string pcName, string json) { Console.WriteLine($"[WindowsReport] Pending uploads from {pcName} len {json.Length}"); }
     public void ReportStorageStop(string pcName, string reason) { Console.WriteLine($"[WindowsReport] Storage stop {pcName} {reason}"); DesktopNotifier.Notify($"Storage stop {pcName}", reason); }
     public void ReportActionProgress(string pcName, string actionId, string progressJson) { Console.WriteLine($"[WindowsReport] Progress {pcName} {actionId} {progressJson.Substring(0, Math.Min(200, progressJson.Length))}"); }
+
+    // ── Phone pushes its live discover/proceed core split + REAL usage ──
+    // Sent by the agent when the split REALLY changes (pools resized) plus a
+    // ~5s heartbeat while work is in flight. Active counts are live threads
+    // (ThreadPoolExecutor.getActiveCount), so the PC can tell sized-but-idle
+    // apart from really-working cores. Extra args default to 0 for old agents.
+    public void ReportCoreSplit(int discoverCores, int proceedCores, int queueSize, int allowedCores,
+        int discoverActive = 0, int proceedActive = 0, int discoverQueued = 0, int proceedQueued = 0)
+    {
+        try
+        {
+            var device = _connectionManager.GetAllDevices()
+                .FirstOrDefault(d => d.ConnectionId == Context.ConnectionId);
+            if (device == null) return;
+            _actionManager.ApplyPhoneCoreSplit(device.DeviceName, discoverCores, proceedCores, allowedCores,
+                discoverActive, proceedActive, discoverQueued, proceedQueued);
+        }
+        catch { }
+    }
 }

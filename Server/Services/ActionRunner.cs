@@ -84,6 +84,25 @@ public class ActionRunner
 
     private enum FileKind { Image, Video, Audio, Other }
 
+    /// <summary>
+    /// Bounds concurrent directory listings during discovery so the phone's
+    /// discover pool actually gets parallel work (a strictly sequential walk
+    /// leaves all-but-one discover threads idle). Also serializes run-counter
+    /// updates from concurrent enumeration tasks.
+    /// </summary>
+    private sealed class DiscoverGate
+    {
+        public readonly SemaphoreSlim Slots;
+        public readonly object CountLock = new();
+        public DiscoverGate(int maxParallel)
+        {
+            int n = Math.Max(1, maxParallel);
+            Slots = new SemaphoreSlim(n, n);
+        }
+    }
+
+    private static readonly object _coreDisplayLock = new();
+
     private sealed class WorkItem
     {
         public required string RelPath { get; init; }
@@ -158,6 +177,12 @@ public class ActionRunner
             int allowed = await GetAllowedCoresAsync(connId, cfg.ParallelWork, runCts.Token);
             if (allowed <= 0) allowed = Math.Max(1, Environment.ProcessorCount);
             int currentProceed = 0;
+            // Congestion backoff: phone-side failures (timeouts, stressed single
+            // core, …) reduce the effective proceed cap below the queue-based
+            // desired value. Recovers one level per 30s without new failures.
+            int lastFailedSeen = 0;
+            long lastCongestTick = 0;
+            const long CongestDecayMs = 30_000;
             // initially all to discover
             run.AllowedCores = allowed;
             run.DiscoverCores = allowed;
@@ -167,13 +192,44 @@ public class ActionRunner
             {
                 int p = Volatile.Read(ref run.QueueSize);
                 int desiredProceed = ComputeProceedCores(p, allowed, Volatile.Read(ref currentProceed));
+                // Failure feedback: new failures since last update => the phone
+                // can't keep up => back the cap off (min 1). No new failures for
+                // a while => recover gradually.
+                int failed = run.FailedFiles; // int reads are atomic; exactness not required here
+                if (failed > lastFailedSeen)
+                {
+                    int newFails = failed - lastFailedSeen;
+                    lastFailedSeen = failed;
+                    if (run.CongestLevel < 3)
+                    {
+                        run.CongestLevel++;
+                        run.AppendLog($"Congestion: {newFails} new failure(s) — backing proceed cap down (level {run.CongestLevel})");
+                    }
+                    lastCongestTick = Environment.TickCount64;
+                }
+                else if (run.CongestLevel > 0 && Environment.TickCount64 - lastCongestTick > CongestDecayMs)
+                {
+                    run.CongestLevel--;
+                    lastCongestTick = Environment.TickCount64;
+                    run.AppendLog($"Congestion cleared — restoring proceed cap (level {run.CongestLevel})");
+                }
+                int effProceed = Math.Max(1, desiredProceed - run.CongestLevel);
+                // Phone-driven display: the phone's push is the source of truth
+                // for the NUMBERS (its pools were really resized). Enforcement
+                // stays server-side on purpose: the phone's proceed figure
+                // describes its own pipeline stage (transcodes etc.), and
+                // capping our request rate to it would livelock at 1 whenever
+                // the phone's local queue momentarily empties.
                 int prev = Volatile.Read(ref currentProceed);
-                if (desiredProceed == prev) return;
-                Volatile.Write(ref currentProceed, desiredProceed);
-                run.ProceedCores = desiredProceed;
-                run.DiscoverCores = p <= 0 ? allowed : Math.Max(1, allowed - desiredProceed);
-                if (allowed <= 1 && p > 0) { run.DiscoverCores = 1; run.ProceedCores = 1; }
-                run.AppendLog($"Cores: discover={run.DiscoverCores} proceed={run.ProceedCores} queue={p} allowed={allowed}");
+                bool displayCurrent = !run.PhoneDrivenSplit && run.ProceedCores == effProceed;
+                if (effProceed == prev && displayCurrent) return;
+                Volatile.Write(ref currentProceed, effProceed);
+                if (run.PhoneDrivenSplit) return; // display mirrors the phone
+                run.ProceedCores = effProceed;
+                run.DiscoverCores = p <= 0 ? allowed : Math.Max(1, allowed - effProceed);
+                if (allowed <= 1 && p > 0) { run.DiscoverCores = 1; run.ProceedCores = 1; Volatile.Write(ref currentProceed, 1); }
+                run.AppendLog($"Cores: discover={run.DiscoverCores} proceed={run.ProceedCores} queue={p} allowed={allowed}" +
+                    (run.CongestLevel > 0 ? $" (congested-{run.CongestLevel})" : ""));
             }
 
             // "Fetch the Files" actions may be bound to one device only.
@@ -333,7 +389,12 @@ public class ActionRunner
 
             // ── Producer: deep-walk each target folder (fetch) or queue the explicit
             //    file list (fetchFiles), sending matching files to the worker lanes ──
-            var seenItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            //    Top-level folders stay SEQUENTIAL so the saved priority order is
+            //    honored (queue fills folder-by-folder). Parallelism happens one
+            //    level down: subdirectories fan out bounded by the discover gate,
+            //    giving the phone concurrent listings to keep its pool busy.
+            var seenItems = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+            var discoverGate = new DiscoverGate(Math.Max(2, allowed));
             try
             {
                 if (isFileAction)
@@ -351,7 +412,7 @@ public class ActionRunner
                     {
                         runCts.Token.ThrowIfCancellationRequested();
                         await EnumerateAsync(connId, deviceId, folder, run, wantImages, wantVideoThumb, wantVideoActual, wantAudio, wantFiles,
-                            imageChannel.Writer, heavyChannel.Writer, seenItems, runCts.Token, pauseGate);
+                            imageChannel.Writer, heavyChannel.Writer, seenItems, runCts.Token, pauseGate, discoverGate);
                     }
                 }
             }
@@ -507,7 +568,8 @@ public class ActionRunner
     private async Task EnumerateAsync(string connId, string deviceId, string folder, ActionRunState run,
         bool wantImages, bool wantVideoThumb, bool wantVideoActual, bool wantAudio, bool wantFiles,
         ChannelWriter<WorkItem> imageWriter, ChannelWriter<WorkItem> heavyWriter,
-        HashSet<string> seenItems, CancellationToken ct, ManualResetEventSlim? pauseGate = null)
+        ConcurrentDictionary<string, byte> seenItems, CancellationToken ct,
+        ManualResetEventSlim? pauseGate = null, DiscoverGate? discoverGate = null)
     {
         if (ct.IsCancellationRequested) return;
         // Pause gate: no phone traffic while paused (cancel still interrupts).
@@ -519,7 +581,21 @@ public class ActionRunner
         // Skip Android .Trash and other trash folders that cause Invalid path loops
         if (folder.Contains(".Trash", StringComparison.OrdinalIgnoreCase) || folder.Contains(".thumbnails", StringComparison.OrdinalIgnoreCase) || folder.Contains("/.") ) return;
 
-        var nodeInfo = await GetPathInfoAsync(connId, folder, ct: ct);
+        // Bounded listing slot: concurrent directories each hold one slot only
+        // for the listing call itself (released before recursing), so N listing
+        // requests are in flight at once and the phone's discover threads go busy.
+        FileNodeResultDto? nodeInfo = null;
+        if (discoverGate != null)
+        {
+            try { await discoverGate.Slots.WaitAsync(ct); }
+            catch (OperationCanceledException) { return; }
+            try { nodeInfo = await GetPathInfoAsync(connId, folder, ct: ct); }
+            finally { discoverGate.Slots.Release(); }
+        }
+        else
+        {
+            nodeInfo = await GetPathInfoAsync(connId, folder, ct: ct);
+        }
         if (nodeInfo == null)
         {
             run.AppendLog($"Path validation failed for '{folder}' (unreachable)");
@@ -538,13 +614,16 @@ public class ActionRunner
 
         _cache.SaveFolderCache(deviceId, folder, nodeInfo);
 
+        var subdirs = new List<Task>();
         foreach (var child in nodeInfo.Children ?? new())
         {
+            if (ct.IsCancellationRequested) break;
             if (child.IsDirectory)
             {
-                await EnumerateAsync(connId, deviceId, child.RelativePath, run,
+                // Recurse concurrently: each child acquires its own listing slot.
+                subdirs.Add(EnumerateAsync(connId, deviceId, child.RelativePath, run,
                     wantImages, wantVideoThumb, wantVideoActual, wantAudio, wantFiles,
-                    imageWriter, heavyWriter, seenItems, ct, pauseGate);
+                    imageWriter, heavyWriter, seenItems, ct, pauseGate, discoverGate));
                 continue;
             }
 
@@ -572,8 +651,14 @@ public class ActionRunner
             if (added)
             {
                 run.CurrentPath = child.RelativePath;
-                run.DiscoveredFiles++;
+                if (discoverGate != null) { lock (discoverGate.CountLock) { run.DiscoveredFiles++; } }
+                else run.DiscoveredFiles++;
             }
+        }
+        if (subdirs.Count > 0)
+        {
+            try { await Task.WhenAll(subdirs); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         }
     }
 
@@ -593,7 +678,7 @@ public class ActionRunner
     private async Task ProduceFromFileAsync(string connId, string deviceId, string file, ActionRunState run,
         bool wantVideoThumb, bool wantVideoActual,
         ChannelWriter<WorkItem> imageWriter, ChannelWriter<WorkItem> heavyWriter,
-        HashSet<string> seenItems, CancellationToken ct, ManualResetEventSlim? pauseGate = null)
+        ConcurrentDictionary<string, byte> seenItems, CancellationToken ct, ManualResetEventSlim? pauseGate = null)
     {
         if (ct.IsCancellationRequested) return;
         if (pauseGate != null)
@@ -650,23 +735,32 @@ public class ActionRunner
         }
     }
 
-    private static bool Queue(ChannelWriter<WorkItem> w, FileNodeDto node, FileKind kind, bool isThumb, HashSet<string> seenItems, ActionRunState? run = null)
+    private static bool Queue(ChannelWriter<WorkItem> w, FileNodeDto node, FileKind kind, bool isThumb, ConcurrentDictionary<string, byte> seenItems, ActionRunState? run = null)
     {
         string key = node.RelativePath + (isThumb ? "#thumb" : "#full");
-        if (!seenItems.Add(key)) return false;
+        if (!seenItems.TryAdd(key, 0)) return false;
         bool ok = w.TryWrite(new WorkItem { RelPath = node.RelativePath, Name = node.Name, Kind = kind, IsThumb = isThumb });
         if (ok && run != null)
         {
             int pending = Interlocked.Increment(ref run.QueueSize);
             int allowed = run.AllowedCores > 0 ? run.AllowedCores : 1;
-            int cur = run.ProceedCores;
-            int desired = ComputeProceedCores(pending, allowed, cur);
-            if (desired != cur)
+            if (run.PhoneDrivenSplit) return ok; // display mirrors the phone's pushes
+            // Concurrent discovery tasks can race here; serialize the check-write-log.
+            lock (_coreDisplayLock)
             {
-                run.ProceedCores = desired;
-                run.DiscoverCores = pending <= 0 ? allowed : Math.Max(1, allowed - desired);
-                if (allowed <= 1 && pending > 0) { run.DiscoverCores = 1; run.ProceedCores = 1; }
-                run.AppendLog($"Cores: discover={run.DiscoverCores} proceed={run.ProceedCores} queue={pending} allowed={allowed}");
+                int cur = run.ProceedCores;
+                int desired = ComputeProceedCores(pending, allowed, cur);
+                // Same congestion adjustment as the enforced limiter (see
+                // UpdateCoreSplit) so the display never shows an unbacked-off cap.
+                int eff = Math.Max(1, desired - run.CongestLevel);
+                if (eff != cur)
+                {
+                    run.ProceedCores = eff;
+                    run.DiscoverCores = pending <= 0 ? allowed : Math.Max(1, allowed - eff);
+                    if (allowed <= 1 && pending > 0) { run.DiscoverCores = 1; run.ProceedCores = 1; }
+                    run.AppendLog($"Cores: discover={run.DiscoverCores} proceed={run.ProceedCores} queue={pending} allowed={allowed}" +
+                        (run.CongestLevel > 0 ? $" (congested-{run.CongestLevel})" : ""));
+                }
             }
         }
         return ok;

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using PhonesBridge.Services.Definitions;
 
 namespace PhonesBridge.Services;
@@ -225,6 +226,31 @@ public class ActionManager
 
     public ActionRunState? GetRun(string runId) => _runs.TryGetValue(runId, out var r) ? r : null;
 
+    /// <summary>
+    /// Applies a phone-pushed discover/proceed core split to that device's
+    /// running fetch runs. The phone only sends when the split REALLY changed
+    /// (pools resized), so these values become the notification's source of
+    /// truth; the server keeps enforcing its own proceed cap as well.
+    /// </summary>
+    public void ApplyPhoneCoreSplit(string deviceName, int discoverCores, int proceedCores, int allowedCores,
+        int discoverActive = 0, int proceedActive = 0, int discoverQueued = 0, int proceedQueued = 0)
+    {
+        foreach (var run in _runs.Values.Where(r =>
+            !r.IsFinished &&
+            r.DeviceName.Equals(deviceName, StringComparison.OrdinalIgnoreCase)))
+        {
+            run.PhoneDrivenSplit = true;
+            run.DiscoverCores = Math.Max(0, discoverCores);
+            run.ProceedCores = Math.Max(0, proceedCores);
+            if (allowedCores > 0)
+                run.AllowedCores = allowedCores;
+            run.DiscoverActive = Math.Max(0, discoverActive);
+            run.ProceedActive = Math.Max(0, proceedActive);
+            run.DiscoverQueued = Math.Max(0, discoverQueued);
+            run.ProceedQueued = Math.Max(0, proceedQueued);
+        }
+    }
+
     /// <summary>Starts a manual run against a connected device.</summary>
     public ActionRunState? Run(ActionEntry action, DeviceIdentity device)
     {
@@ -310,6 +336,20 @@ public class ActionRunState
     public int DiscoverCores { get; set; }
     public int ProceedCores { get; set; }
     public int QueueSize; // field for Interlocked
+    /// <summary>Congestion backoff level (0 = none). Reduces the effective
+    /// proceed cap when phone-side failures spike. Internal, not serialized.</summary>
+    [JsonIgnore]
+    public int CongestLevel { get; set; }
+    /// <summary>True once the phone pushed a live core split for this run.
+    /// Display fields then mirror the phone; server enforcement continues.</summary>
+    [JsonIgnore]
+    public bool PhoneDrivenSplit { get; set; }
+    /// <summary>Live threads actually executing on the phone right now
+    /// (vs. pool sizes). 0 until the first push; updated ~5s while busy.</summary>
+    public int DiscoverActive { get; set; }
+    public int ProceedActive { get; set; }
+    public int DiscoverQueued { get; set; }
+    public int ProceedQueued { get; set; }
 
     private readonly List<ActionLogLine> _log = new();
     private readonly object _logLock = new();

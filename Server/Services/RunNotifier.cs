@@ -149,7 +149,7 @@ public sealed class RunNotifier
                     l2 = "Speed",
                     v2 = FormatSpeed(mbps),
                     l3 = "Cores",
-                    v3 = $"{run.DiscoverCores} discover / {run.ProceedCores} proceed",
+                    v3 = $"{run.DiscoverCores} discover ({run.DiscoverActive} busy) / {run.ProceedCores} proceed ({run.ProceedActive} busy)",
                     l4 = "Queue",
                     v4 = $"{run.QueueSize} (allowed {run.AllowedCores})"
                 };
