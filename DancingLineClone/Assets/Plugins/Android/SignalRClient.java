@@ -138,8 +138,9 @@ public class SignalRClient {
             discoverPool.setMaximumPoolSize(Math.max(desiredDiscover, discoverPool.getMaximumPoolSize()));
             discoverPool.setCorePoolSize(desiredDiscover);
             if (desiredProceed <= 0) {
-                proceedPool.setCorePoolSize(0);
+                // Keep at least 1 core so queued proceed tasks don't deadlock in queue
                 proceedPool.setMaximumPoolSize(Math.max(1, allowed));
+                proceedPool.setCorePoolSize(1);
             } else {
                 proceedPool.setMaximumPoolSize(Math.max(desiredProceed, proceedPool.getMaximumPoolSize()));
                 proceedPool.setCorePoolSize(desiredProceed);
@@ -163,10 +164,10 @@ public class SignalRClient {
         discoverPool = (java.util.concurrent.ThreadPoolExecutor) Executors.newFixedThreadPool(set, DISCOVER_DAEMON_FACTORY);
         proceedPool = (java.util.concurrent.ThreadPoolExecutor) Executors.newFixedThreadPool(Math.max(1, set), PROCEED_DAEMON_FACTORY);
         dataWorkers = Executors.newFixedThreadPool(set, DATA_DAEMON_FACTORY);
-        // reset pending and adjust to initial "all discover"
+        // reset pending and adjust to initial "all discover" but keep proceed 1 to avoid deadlock
         pendingProceedQueue.set(0);
         discoverCores = set;
-        proceedCores = 0;
+        proceedCores = 1;
         adjustPools();
         try { oldDiscover.shutdown(); } catch (Exception ignored) {}
         try { oldProceed.shutdown(); } catch (Exception ignored) {}

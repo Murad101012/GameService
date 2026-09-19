@@ -91,9 +91,11 @@ public class FileManager {
     public static FileNodeDto.FileNodeResultDto getPathInfoWithOverride(String relativePath, boolean isLowRes,
             float frameOverride, float qualityOverride,
             boolean imageOnly, boolean videoOnly, int sinceDays, int startIndex, int fileLimit) {
+        SignalRClient.sendClassLog("FileManager", "Message", "getPathInfoWithOverride: path='"+relativePath+"' lowRes="+isLowRes+" frame="+frameOverride+" quality="+qualityOverride+" imageOnly="+imageOnly+" videoOnly="+videoOnly);
         FileNodeDto emptyNode = new FileNodeDto("", "", false, 0, 0, formatIsoDate(0));
         File targetFile = resolvePath(relativePath);
         if (targetFile == null || !targetFile.exists()) {
+            SignalRClient.sendClassLog("FileManager", "Error", "getPathInfoWithOverride: not found '"+relativePath+"' resolved="+(targetFile!=null?targetFile.getAbsolutePath():"null"));
             return new FileNodeDto.FileNodeResultDto(false, emptyNode, new ArrayList<FileNodeDto>());
         }
 

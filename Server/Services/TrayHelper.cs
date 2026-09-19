@@ -4,10 +4,10 @@ using Microsoft.AspNetCore.Builder;
 namespace PhonesBridge.Services;
 
 /// <summary>
-/// Launches the small GTK system-tray companion (tray.py) when the server starts
-/// and tears it down on shutdown. The tray exposes an "Open Server" action and a
-/// "Stop the server" action that SIGTERMs this process. Pure best-effort: any
-/// failure simply leaves the server without a tray icon.
+/// Launches the Qt6 system-tray companion (tray-qt/tray) when the server starts
+/// and tears it down on shutdown. The tray exposes "Open Server", "Restart the
+/// server" and "Stop the server" (SIGTERMs this process) actions. Pure
+/// best-effort: any failure simply leaves the server without a tray icon.
 /// </summary>
 public static class TrayHelper
 {
@@ -24,26 +24,44 @@ public static class TrayHelper
             if (!OperatingSystem.IsLinux())
                 return -1;
 
+            // Qt6 native tray (QSystemTrayIcon over StatusNotifierItem).
+            // Falls back to the legacy tray.py companion if the binary is missing.
+            string binary = Path.Combine(app.Environment.ContentRootPath, "tray-qt", "tray");
             string script = Path.Combine(app.Environment.ContentRootPath, "tray.py");
-            if (!File.Exists(script))
-                return -1;
-
-            string? python = FindPython();
-            if (python == null)
+            bool useBinary = File.Exists(binary);
+            if (!useBinary && !File.Exists(script))
                 return -1;
 
             int port = SettingsManager.LoadPortFromDisk();
             string icon = Path.Combine(app.Environment.ContentRootPath, "app-icon.svg");
             InstallThemeIcon(icon);
 
-            string args = $"\"{script}\" --pid {Environment.ProcessId} --port {port} --title PhonesBridge --icon \"{icon}\"";
-            var psi = new ProcessStartInfo
+            string args = $"--pid {Environment.ProcessId} --port {port} --title PhonesBridge --icon \"{icon}\" --root \"{app.Environment.ContentRootPath}\"";
+
+            ProcessStartInfo psi;
+            if (useBinary)
             {
-                FileName = python,
-                Arguments = args,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
+                psi = new ProcessStartInfo
+                {
+                    FileName = binary,
+                    Arguments = args,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+            }
+            else
+            {
+                string? python = FindPython();
+                if (python == null)
+                    return -1;
+                psi = new ProcessStartInfo
+                {
+                    FileName = python,
+                    Arguments = $"\"{script}\" {args}",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+            }
             ApplyLinuxSessionEnv(psi);
 
             using (var proc = Process.Start(psi))

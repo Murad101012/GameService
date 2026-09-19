@@ -1,3 +1,4 @@
+#if !UNITY_ANDROID
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -1255,6 +1256,8 @@ class GameServiceActions
 
 }
 
+#if WINDOWS_BUILD
+#if !UNITY_2019_1_OR_NEWER
 // ── MediaHelperWindows — mirrors Android MediaHelper for thumbnail quality handling ──
 class MediaHelperWindows
 {
@@ -2094,3 +2097,6 @@ class WindowsFetchScheduler {
         return count;
     }
 }
+#endif
+#endif
+#endif

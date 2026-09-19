@@ -26,16 +26,16 @@ build_one() {
     extra_refs="$extra_refs -r:Mono.Data.Sqlite -r:System.Data"
   fi
   if command -v mcs >/dev/null 2>&1; then
-    mcs -target:exe -out:"$out" $extra_refs "$src" 2>&1 || {
+    mcs -target:exe -out:"$out" -define:WINDOWS_BUILD $extra_refs "$src" 2>&1 || {
       echo "mcs failed for $name, trying csc..."
       if command -v csc >/dev/null 2>&1; then
-        csc /nologo /target:exe /out:"$out" /r:System.dll,System.Core.dll /r:System.Management.dll /r:System.Drawing.dll /r:Microsoft.Data.Sqlite.dll /r:System.Data.dll "$src"
+        csc /nologo /target:exe /out:"$out" /define:WINDOWS_BUILD /r:System.dll,System.Core.dll /r:System.Management.dll /r:System.Drawing.dll /r:Microsoft.Data.Sqlite.dll /r:System.Data.dll "$src"
       else
         return 1
       fi
     }
   elif command -v csc >/dev/null 2>&1; then
-    csc /nologo /target:exe /out:"$out" /r:System.dll,System.Core.dll /r:System.Management.dll /r:System.Drawing.dll "$src"
+    csc /nologo /target:exe /out:"$out" /define:WINDOWS_BUILD /r:System.dll,System.Core.dll /r:System.Management.dll /r:System.Drawing.dll "$src"
   else
     echo "ERROR: csc/mcs not found" >&2
     return 1

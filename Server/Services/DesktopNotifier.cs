@@ -50,6 +50,54 @@ public static class DesktopNotifier
         Process.Start(psi);
     }
 
+    /// <summary>
+    /// Shows a notification with clickable action buttons (Linux notify-send -A).
+    /// Returns the id of the clicked button, or null if dismissed/expired/failed.
+    /// Each action is (id, label); the id is echoed to stdout by notify-send.
+    /// Must be called from a background thread — blocks until the user acts or
+    /// the timeout elapses.
+    /// </summary>
+    public static string? NotifyWithActions(string title, string message,
+        IReadOnlyList<(string Id, string Label)> actions, TimeSpan timeout)
+    {
+        if (!OperatingSystem.IsLinux() || actions.Count == 0)
+            return null;
+        try
+        {
+            var psi = new ProcessStartInfo("notify-send")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            TrayHelper.ApplyLinuxSessionEnv(psi);
+            psi.ArgumentList.Add("--app-name=PhonesBridge");
+            psi.ArgumentList.Add("--icon=phone");
+            foreach (var (id, label) in actions)
+                psi.ArgumentList.Add($"--action={id}={label}");
+            psi.ArgumentList.Add("--wait");
+            psi.ArgumentList.Add(title);
+            psi.ArgumentList.Add(message);
+            using var proc = Process.Start(psi);
+            if (proc == null)
+                return null;
+            // --wait exits on click, dismiss, or server-side expiry; bound it anyway.
+            if (!proc.WaitForExit((int)timeout.TotalMilliseconds))
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { }
+                return null;
+            }
+            string choice = (proc.StandardOutput.ReadToEnd() ?? "").Trim();
+            return actions.Any(a => a.Id == choice) ? choice : null;
+        }
+        catch (Exception ex)
+        {
+            /* Console.WriteLine($"[DesktopNotifier] Action notify failed: {ex.Message}"); */
+            return null;
+        }
+    }
+
     private static void ShowWindowsToast(string title, string message)
     {
         string script =

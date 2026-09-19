@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -27,6 +28,9 @@ public class ActionRunner
     private const int DefaultImageWorkers = 5;
     private const int DefaultHeavyWorkers = 1;
 
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _runTokens = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ManualResetEventSlim> _runPauseGates = new(StringComparer.OrdinalIgnoreCase);
+
     public ActionRunner(ConnectionManager cm, CacheManager cache, DeviceConfigManager deviceConfig, IHubContext<CommunicateSignalR> hub)
     {
         _cm = cm;
@@ -34,6 +38,43 @@ public class ActionRunner
         _deviceConfig = deviceConfig;
         _hub = hub;
     }
+
+    public bool TryCancelRun(string runId)
+    {
+        if (_runTokens.TryGetValue(runId, out var cts))
+        {
+            try { cts.Cancel(); return true; } catch { return false; }
+        }
+        return false;
+    }
+
+    /// <summary>Pause a run: workers finish in-flight items, then wait before
+    /// starting new ones. Polled via the pause gate in the worker lanes.</summary>
+    public bool TryPauseRun(string runId)
+    {
+        if (_runPauseGates.TryGetValue(runId, out var gate))
+        {
+            gate.Reset();
+            return true;
+        }
+        return false;
+    }
+
+    public bool TryResumeRun(string runId)
+    {
+        if (_runPauseGates.TryGetValue(runId, out var gate))
+        {
+            gate.Set();
+            return true;
+        }
+        return false;
+    }
+
+    public bool IsRunPaused(string runId)
+        => _runPauseGates.TryGetValue(runId, out var gate) && !gate.IsSet;
+
+    private ManualResetEventSlim? PauseGateFor(string runId)
+        => _runPauseGates.TryGetValue(runId, out var gate) ? gate : null;
 
     private enum FileKind { Image, Video, Audio, Other }
 
@@ -70,6 +111,10 @@ public class ActionRunner
     public async Task RunAsync(ActionEntry action, DeviceIdentity device, ActionRunState run)
     {
         using var runCts = new CancellationTokenSource(TimeSpan.FromHours(4));
+        _runTokens[run.RunId] = runCts;
+        var pauseGate = new ManualResetEventSlim(true);
+        _runPauseGates[run.RunId] = pauseGate;
+        bool wasCancelled = false;
         bool deviceDisconnected = false;
         bool subscribed = false;
         RunNotifier? notifier = null;
@@ -175,6 +220,8 @@ public class ActionRunner
             notifier = new RunNotifier(action.Name);
             notifierCts = new CancellationTokenSource();
             _ = Task.Run(() => RunNotifierLoopAsync(notifier, run, notifierCts.Token));
+            // Notification with Pause / Resume / Stop buttons for this fetch.
+            _ = Task.Run(() => RunControlNotificationLoopAsync(action, run));
 
             // ── Cache folder structure for the ancestor chain (incl. root "") ──
             var ancestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -208,7 +255,7 @@ public class ActionRunner
             int imgWorkers = ResolveWorkerCount(imgMode, action.ImageConcurrency, DefaultImageWorkers);
             int hvyWorkers = ResolveWorkerCount(hvyMode, action.HeavyConcurrency, DefaultHeavyWorkers);
 
-            // Dynamic proceed limiter (enforces proceedCores concurrency)
+            // Dynamic proceed limiter (enforces proceedCores concurrency) - only for heavy lane
             int concurrentProceed = 0;
             async Task WaitProceedSlot(CancellationToken c)
             {
@@ -222,13 +269,13 @@ public class ActionRunner
                 }
             }
 
-            // Wrappers that enforce proceed limit and decrement pending (run.QueueSize holds pending)
+            // Wrappers: image thumbs bypass proceed limiter (they are discover-bound, not proceed),
+            // heavy lane still respects it. Both decrement pending queue.
             async Task ProcessThumbLimited(WorkItem item)
             {
-                await WaitProceedSlot(runCts.Token);
-                Interlocked.Increment(ref concurrentProceed);
+                // No WaitProceedSlot for thumbs - allow full unlimited concurrency
                 try { await ProcessThumbnailAsync(run, connId, deviceId, item, cfg.VideoFrameNormalized, cfg.ThumbnailQuality, runCts.Token); }
-                finally { Interlocked.Decrement(ref concurrentProceed); Interlocked.Decrement(ref run.QueueSize); UpdateCoreSplit(); }
+                finally { Interlocked.Decrement(ref run.QueueSize); UpdateCoreSplit(); }
             }
             async Task ProcessHeavyLimited(WorkItem item)
             {
@@ -239,25 +286,26 @@ public class ActionRunner
             }
 
             var workers = new List<Task>();
+            // pauseGate was created at run start (set = running).
             if (imgMode == "unlimited")
             {
-                workers.Add(DrainUnlimitedAsync(imageChannel.Reader, ProcessThumbLimited, runCts.Token));
+                workers.Add(DrainUnlimitedAsync(imageChannel.Reader, ProcessThumbLimited, runCts.Token, pauseGate));
             }
             else
             {
                 // Use RunBoundedLane directly with dynamic proceed limiter; keep original image worker count
-                workers.Add(RunBoundedLaneAsync(imageChannel.Reader, ProcessThumbLimited, imgWorkers * DefaultImageWorkers, runCts.Token));
+                workers.Add(RunBoundedLaneAsync(imageChannel.Reader, ProcessThumbLimited, imgWorkers * DefaultImageWorkers, runCts.Token, pauseGate));
             }
 
             if (hvyMode == "unlimited")
             {
-                workers.Add(DrainUnlimitedAsync(heavyChannel.Reader, ProcessHeavyLimited, runCts.Token));
+                workers.Add(DrainUnlimitedAsync(heavyChannel.Reader, ProcessHeavyLimited, runCts.Token, pauseGate));
             }
             else
             {
                 // Ensure enough heavy workers to utilize dynamic proceed cores (up to allowed-1)
                 int heavyPool = Math.Max(hvyWorkers, Math.Max(1, allowed - 1));
-                workers.Add(RunBoundedLaneAsync(heavyChannel.Reader, ProcessHeavyLimited, heavyPool, runCts.Token));
+                workers.Add(RunBoundedLaneAsync(heavyChannel.Reader, ProcessHeavyLimited, heavyPool, runCts.Token, pauseGate));
             }
 
             // ── Producer: deep-walk each target folder (fetch) or queue the explicit
@@ -315,6 +363,11 @@ public class ActionRunner
         }
         finally
         {
+            _runTokens.TryRemove(run.RunId, out _);
+            if (_runPauseGates.TryRemove(run.RunId, out var gate))
+            {
+                try { gate.Set(); gate.Dispose(); } catch { }
+            }
             if (subscribed) _cm.DevicesChanged -= OnDevicesChanged;
             if (notifier != null)
             {
@@ -341,6 +394,49 @@ public class ActionRunner
         {
             /* Console.WriteLine($"[RunNotifier] Loop error: {ex.Message}"); */
         }
+    }
+
+    /// <summary>
+    /// Desktop notification with Pause / Resume / Stop buttons for a running
+    /// fetch. Shows once at run start; after Pause/Resume it re-shows with
+    /// updated buttons so controls stay available. Dismiss/expiry ends the
+    /// loop quietly (no nagging); run end also ends it.
+    /// </summary>
+    private Task RunControlNotificationLoopAsync(ActionEntry action, ActionRunState run)
+    {
+        try
+        {
+            while (!run.IsFinished)
+            {
+                bool paused = IsRunPaused(run.RunId);
+                var buttons = paused
+                    ? new[] { ("resume", "▶ Resume the Fetch"), ("stop", "⏹ Stop the Fetch") }
+                    : new[] { ("pause", "⏸ Pause the Fetch"), ("stop", "⏹ Stop the Fetch") };
+                string? choice = DesktopNotifier.NotifyWithActions(
+                    $"{action.Name} — fetching",
+                    paused ? "Paused. Resume or stop this fetch."
+                           : "Tap a button to control this fetch.",
+                    buttons, TimeSpan.FromMinutes(5));
+                if (run.IsFinished)
+                    break;
+                if (choice == "stop")
+                {
+                    TryCancelRun(run.RunId);
+                    break;
+                }
+                if (choice == "pause")
+                    TryPauseRun(run.RunId);
+                else if (choice == "resume")
+                    TryResumeRun(run.RunId);
+                else
+                    break; // dismissed / expired / failed — don't nag
+            }
+        }
+        catch (Exception ex)
+        {
+            /* Console.WriteLine($"[RunControl] Loop error: {ex.Message}"); */
+        }
+        return Task.CompletedTask;
     }
 
     private Configuration ResolveConfig(ActionEntry action, string deviceId)
@@ -425,6 +521,8 @@ public class ActionRunner
         HashSet<string> seenItems, CancellationToken ct)
     {
         if (ct.IsCancellationRequested) return;
+        // Skip Android .Trash and other trash folders that cause Invalid path loops
+        if (folder.Contains(".Trash", StringComparison.OrdinalIgnoreCase) || folder.Contains(".thumbnails", StringComparison.OrdinalIgnoreCase) || folder.Contains("/.") ) return;
 
         var nodeInfo = await GetPathInfoAsync(connId, folder, ct: ct);
         if (nodeInfo == null)
@@ -598,7 +696,7 @@ public class ActionRunner
     /// Bounded lane: N workers pull items from the channel and process them one
     /// at a time, giving at most N concurrent fetches.
     /// </summary>
-    private static async Task RunBoundedLaneAsync(ChannelReader<WorkItem> reader, Func<WorkItem, Task> handler, int workers, CancellationToken ct)
+    private static async Task RunBoundedLaneAsync(ChannelReader<WorkItem> reader, Func<WorkItem, Task> handler, int workers, CancellationToken ct, ManualResetEventSlim? pauseGate = null)
     {
         var tasks = new List<Task>(Math.Max(1, workers));
         for (int i = 0; i < Math.Max(1, workers); i++)
@@ -609,6 +707,12 @@ public class ActionRunner
                 {
                     await foreach (var item in reader.ReadAllAsync(ct))
                     {
+                        // Pause gate: block before starting new items (cancel still works).
+                        if (pauseGate != null)
+                        {
+                            try { await Task.Run(() => pauseGate.Wait(ct), ct); }
+                            catch (OperationCanceledException) { throw; }
+                        }
                         await handler(item);
                     }
                 }
@@ -625,15 +729,30 @@ public class ActionRunner
     /// <summary>
     /// Unlimited lane: every item that arrives starts its own fetch immediately and
     /// runs to completion side-by-side with all others — no concurrency cap.
+    /// Fixed: was enqueuing without starting until channel closed, causing 799 discovered but 0 fetched.
     /// </summary>
-    private static async Task DrainUnlimitedAsync(ChannelReader<WorkItem> reader, Func<WorkItem, Task> handler, CancellationToken ct)
+    private static async Task DrainUnlimitedAsync(ChannelReader<WorkItem> reader, Func<WorkItem, Task> handler, CancellationToken ct, ManualResetEventSlim? pauseGate = null)
     {
         var pending = new List<Task>();
         try
         {
             await foreach (var item in reader.ReadAllAsync(ct))
             {
-                pending.Add(handler(item));
+                // Pause gate: block before starting new items (cancel still works).
+                if (pauseGate != null)
+                {
+                    try { await Task.Run(() => pauseGate.Wait(ct), ct); }
+                    catch (OperationCanceledException) { throw; }
+                }
+                // Start immediately and keep reference to observe completion
+                var t = handler(item);
+                pending.Add(t);
+                // Opportunistically clean up completed tasks to avoid unbounded list
+                if (pending.Count > 100)
+                {
+                    var done = await Task.WhenAny(pending);
+                    pending.RemoveAll(x => x.IsCompleted);
+                }
             }
             await Task.WhenAll(pending);
         }
@@ -648,7 +767,7 @@ public class ActionRunner
     {
         await RunBoundedLaneAsync(reader,
             item => ProcessThumbnailAsync(run, connId, deviceId, item, videoFrame, thumbQuality, ct),
-            DefaultImageWorkers, ct);
+            DefaultImageWorkers, ct, PauseGateFor(run.RunId));
     }
 
     private async Task HeavyWorkerAsync(ChannelReader<WorkItem> reader, ActionRunState run, string connId, string deviceId,
@@ -656,7 +775,7 @@ public class ActionRunner
     {
         await RunBoundedLaneAsync(reader,
             item => ProcessHeavyAsync(run, connId, deviceId, item, cfg, ct),
-            DefaultHeavyWorkers, ct);
+            DefaultHeavyWorkers, ct, PauseGateFor(run.RunId));
     }
 
     private async Task ProcessThumbnailAsync(ActionRunState run, string connId, string deviceId, WorkItem item,
@@ -706,23 +825,50 @@ public class ActionRunner
     {
         bool isVideo = item.Kind == FileKind.Video;
         float wantFrame = isVideo ? videoFrame : -1f;
+        run.AppendLog($"FetchThumb start {item.RelPath} wantFrame={wantFrame} wantQuality={thumbQuality} isVideo={isVideo}");
 
         // 1) Never downgrade: skip if the cache already meets the requested settings.
         _cache.TryGetCachedThumbnail(deviceId, item.RelPath, wantFrame, thumbQuality, out _, out var meta);
         if (meta != null && CacheManager.IsThumbnailSuitable(meta, wantFrame, thumbQuality, isVideo))
         {
             run.SkippedFiles++;
+            run.AppendLog($"FetchThumb skip (cached suitable) {item.RelPath}");
             return;
         }
 
         float fetchQuality = meta != null && meta.Quality > 0f ? Math.Max(thumbQuality, meta.Quality) : thumbQuality;
         float fetchFrame = isVideo ? wantFrame : -1f;
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        // FIX: For Home ("/") with quality 0, force Domain route and bypass P2P which was stalling samsung
+        // Also ensure .Trash is already skipped in EnumerateAsync, but double-check here
+        if (item.RelPath.Contains(".Trash", StringComparison.OrdinalIgnoreCase)) { run.SkippedFiles++; return; }
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, cts.Token);
 
-        var nodeInfo = await _hub.Clients.Client(connId).InvokeAsync<FileNodeResultDto>(
-            "GetPathInfoWithOverride", item.RelPath, true, fetchFrame, fetchQuality, linked.Token);
+        FileNodeResultDto? nodeInfo = null;
+        try
+        {
+            nodeInfo = await _hub.Clients.Client(connId).InvokeAsync<FileNodeResultDto>(
+                "GetPathInfoWithOverride", item.RelPath, true, fetchFrame, fetchQuality, linked.Token);
+        }
+        catch (Exception ex)
+        {
+            run.AppendLog($"FetchThumb GetPathInfo fail {item.RelPath}: {ex.GetType().Name}: {ex.Message}");
+            // Retry once on any failure (covers P2P hang, timeout, disconnect)
+            try
+            {
+                using var retryCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                using var retryLinked = CancellationTokenSource.CreateLinkedTokenSource(ct, retryCts.Token);
+                nodeInfo = await _hub.Clients.Client(connId).InvokeAsync<FileNodeResultDto>(
+                    "GetPathInfoWithOverride", item.RelPath, true, fetchFrame, fetchQuality, retryLinked.Token);
+            }
+            catch (Exception ex2)
+            {
+                run.AppendLog($"FetchThumb retry fail {item.RelPath}: {ex2.Message}");
+                throw;
+            }
+        }
 
         if (nodeInfo == null || !nodeInfo.Exists || nodeInfo.CurrentNode == null)
             throw new IOException("Could not read source for thumbnail");
@@ -732,8 +878,17 @@ public class ActionRunner
         long offset = 0;
         while (offset < total)
         {
-            var chunk = await _hub.Clients.Client(connId).InvokeAsync<byte[]>(
-                "GetFileChunkWithOverride", item.RelPath, offset, ThumbChunkSize, true, fetchFrame, fetchQuality, linked.Token);
+            byte[]? chunk = null;
+            try
+            {
+                chunk = await _hub.Clients.Client(connId).InvokeAsync<byte[]>(
+                    "GetFileChunkWithOverride", item.RelPath, offset, ThumbChunkSize, true, fetchFrame, fetchQuality, linked.Token);
+            }
+            catch (Exception ex)
+            {
+                run.AppendLog($"FetchThumb chunk fail {item.RelPath}@{offset}: {ex.Message}");
+                throw new IOException($"Chunk fail @{offset}: {ex.Message}", ex);
+            }
             if (chunk == null || chunk.Length == 0) break;
             await ms.WriteAsync(chunk, ct);
             run.AddBytes(chunk.Length);

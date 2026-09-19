@@ -115,15 +115,10 @@ public sealed class RunNotifier
                     ? $"Discovered: {run.DiscoveredFiles} · Fetched: {run.FetchedFiles} · Skipped: {run.SkippedFiles} · Failed: {run.FailedFiles} · Queue: {run.QueueSize}"
                     : "Fetching…";
 
-                // Dynamic core split display (rules: allowed total, discover vs proceed + queue)
-                string coreInfo = run.AllowedCores > 0
-                    ? $"Cores: {run.DiscoverCores} discover / {run.ProceedCores} proceed (allowed {run.AllowedCores}, queue {run.QueueSize})"
-                    : $"Cores: queue {run.QueueSize}";
-
                 var msg = new
                 {
                     title = $"{_actionName} — {FormatSpeed(mbps)}",
-                    info = $"{info} · {coreInfo}",
+                    info = info,
                     percent = (int)(progress * 100),
                     speed = (long)Math.Max(0, bytes),
                     l1 = "Progress",

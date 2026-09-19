@@ -597,6 +597,21 @@ app.MapPost("/api/search/stop/{device}", async (string device, ConnectionManager
 
 // ── Actions endpoints ──
 app.MapGet("/api/actions", (ActionManager am) => Results.Ok(am.GetAll()));
+app.MapPost("/api/actions", async (HttpContext ctx, ActionManager am) =>
+{
+    try
+    {
+        var body = await new StreamReader(ctx.Request.Body).ReadToEndAsync();
+        var entry = JsonSerializer.Deserialize<PhonesBridge.Services.Definitions.ActionEntry>(body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        if (entry == null) return Results.BadRequest(new { message = "Invalid action" });
+        var saved = am.Upsert(entry);
+        return Results.Ok(saved);
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+});
 
 // ── Pluggable remote device actions (for future client-aware devices) ──
 // GET tries to fetch from device via SignalR; if device doesn't support GetActions, returns 500.
@@ -1094,6 +1109,7 @@ app.MapPost("/api/windows-database/{pc}/browse", async (string pc, HttpContext c
         try {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             var resp = await hubContext.Clients.Client(cid).InvokeCoreAsync<JsonElement>("BrowseDatabase", new object[]{deviceId, path}, cts.Token);
+            if (resp.ValueKind == JsonValueKind.Object && resp.TryGetProperty("error", out _)) continue;
             return Results.Ok(resp);
         } catch (Exception ex) { Console.WriteLine($"[WindowsDB] browse via {cid} failed {ex.Message}"); }
     }
@@ -1113,6 +1129,7 @@ app.MapPost("/api/windows-database/{pc}/add", async (string pc, HttpContext ctx,
         try {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
             var resp = await hubContext.Clients.Client(cid).InvokeCoreAsync<JsonElement>("AddToServerCache", new object[]{deviceId, mode}, cts.Token);
+            if (resp.ValueKind == JsonValueKind.Object && resp.TryGetProperty("error", out _)) continue;
             Console.WriteLine($"[WindowsDB] add {deviceId} mode {mode} via {cid} -> {resp}");
             return Results.Ok(resp);
         } catch (Exception ex) { Console.WriteLine($"[WindowsDB] add via {cid} failed {ex.Message}"); }

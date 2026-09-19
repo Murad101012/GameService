@@ -1,3 +1,4 @@
+#if !UNITY_ANDROID
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -1143,6 +1144,7 @@ class GameServiceDatabase
 
 }
 
+#if WINDOWS_BUILD
 // ── MediaHelperWindows — mirrors Android MediaHelper for thumbnail quality handling ──
 class MediaHelperWindows
 {
@@ -1709,3 +1711,5 @@ class DatabaseManager {
         }
     }
 }
+#endif
+#endif

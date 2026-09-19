@@ -70,7 +70,7 @@
             @* Only for "Fetch the folder" *@
             <div id="folders-section">
                 <div class="form-group">
-                    <label class="form-label">Folders to Fetch <span id="win-priority-hint" class="hidden" style="font-size:0.8rem;color:var(--accent)"> — numbers show priority (1 highest)</span></label>
+                    <label class="form-label">Folders to Fetch <span id="win-priority-hint" class="hidden" style="font-size:0.8rem;color:var(--accent)"> — numbers show fetch order (1 first)</span></label>
                     <div class="folder-check-list" id="folder-checks">
                         <label class="folder-check home-folder-check"><input type="checkbox" id="folder-home" value="/" onchange="onFolderToggle()" /> <span class="prio-badge hidden"></span> 🏠 Home — entire storage root</label>
                         <label class="folder-check"><input type="checkbox" value="DCIM" onchange="onFolderToggle()" /> <span class="prio-badge hidden"></span> 📷 DCIM</label>
@@ -748,18 +748,17 @@
         setTimeout(()=>{
             refreshWindowsMode();
             if (isWindowsSelected() && !id) {
-                // default all except Pictures/.thumbnails, priority order DCIM/Camera, DCIM/Screenshots, DCIM, Pictures, Home
-                const defaults = ['DCIM/Camera','DCIM/Screenshots','DCIM','Pictures','/'];
+                // Default priority set. Must be a CONSISTENT checkbox state:
+                // Home unchecked (checking it auto-disables everything else),
+                // DCIM unchecked (checking it auto-disables Camera/Screenshots).
+                // Result: Camera=1, Screenshots=2, Pictures=3, visible at once.
+                const defaults = ['DCIM/Camera','DCIM/Screenshots','Pictures'];
                 winFolderOrder = defaults.slice();
-                defaults.forEach(v=>{
-                    const el = v==='/' ? document.getElementById('folder-home') : document.querySelector(`#folder-checks input[value="${v}"]`);
-                    if (el) el.checked = true;
-                    if (v==='Pictures/.thumbnails') {
-                        const th = document.querySelector(`#folder-checks input[value="Pictures/.thumbnails"]`);
-                        if(th) th.checked = false;
-                    }
+                document.getElementById('folder-home').checked = false;
+                document.querySelectorAll('#folder-checks input[type="checkbox"]').forEach(c => {
+                    c.checked = defaults.includes(c.value);
                 });
-                updateWinPrioBadges();
+                onFolderToggle(); // applies overlap rules + priority badges
                 // content defaults Images, Videos
                 winContentOrder = ['wct-images','wct-videos'];
                 document.getElementById('wct-images').checked = true;
@@ -784,6 +783,11 @@
             if (box) box.checked = true;
             else if (f && !f.startsWith('DCIM/') && !f.startsWith('Pictures/')) document.getElementById('custom-folder').value = f;
         });
+        // Fetch order for the badges: Windows actions restore folderPriority
+        // below; anything else uses the saved folders list order verbatim.
+        if (!a.folderPriority) {
+            winFolderOrder = (a.folders || []).map(f => (f === '' ? '/' : f));
+        }
         if (a.type === 'fetchFiles') {
             setFilesList(a.files || []);
             const vt = ((a.videoFetchType || 'thumbnail').toLowerCase() === 'actual') ? 'actual' : 'thumbnail';
@@ -869,6 +873,9 @@
     function onActionTypeChange() {
         const type = document.getElementById('action-type').value;
         document.getElementById('folders-section').classList.toggle('hidden', type !== 'fetch');
+        document.getElementById('files-section').classList.toggle('hidden', type !== 'fetchFiles');
+        // Fetch-order numbers live under Folders to Fetch for every device.
+        document.getElementById('win-priority-hint')?.classList.toggle('hidden', type !== 'fetch');
         document.getElementById('files-section').classList.toggle('hidden', type !== 'fetchFiles');
         document.getElementById('action-type-hint').textContent =
             type === 'fetchFiles'
@@ -975,7 +982,6 @@
     }
     function refreshWindowsMode() {
         const isWin = isWindowsSelected();
-        document.getElementById('win-priority-hint')?.classList.toggle('hidden', !isWin);
         document.getElementById('content-normal')?.classList.toggle('hidden', isWin);
         document.getElementById('content-windows')?.classList.toggle('hidden', !isWin);
         document.getElementById('windows-devices-section')?.classList.toggle('hidden', !isWin);
@@ -1097,7 +1103,14 @@
             if (row) row.classList.toggle('disabled', homeOn);
             if (homeOn) customInput.value = '';
         }
-        if (homeOn) return;
+        if (homeOn) {
+            // Home checked: it is the only active folder. Reset click order to
+            // just Home and refresh badges (otherwise old numbers stay stuck
+            // on the now-unchecked boxes).
+            winFolderOrder = ['/'];
+            updateWinPrioBadges();
+            return;
+        }
         Object.entries(PARENT_CHILDREN).forEach(([parent, children]) => {
             const p = document.querySelector(`#folder-checks input[value="${parent}"]`);
             children.forEach(child => {
@@ -1113,7 +1126,10 @@
                 }
             });
         });
-        if (isWindowsSelected()) updateWinPrioBadges();
+        // Priority badges are shown for every device: the number is the fetch
+        // order (1 first). For server actions the saved folders list keeps
+        // this order; for Windows it feeds folderPriority.
+        updateWinPrioBadges();
     }
 
     function onTriggerChange() {}
@@ -1251,6 +1267,12 @@
             // Home (storage root) supersedes every per-folder selection: it walks the
             // whole / tree, so the folder list is kept to the single root marker.
             if (document.getElementById('folder-home').checked) folders = ['/'];
+
+            // Persist the on-screen priority order (badges): folders are fetched
+            // in list order, so the click order becomes the fetch order.
+            // (Windows actions additionally send folderPriority below.)
+            const orderIdx = v => { const i = winFolderOrder.indexOf(v); return i === -1 ? winFolderOrder.length : i; };
+            folders = folders.slice().sort((a, b) => orderIdx(a) - orderIdx(b));
 
             const CT_IDS = { images: 'ct-images', videoThumb: 'ct-vidthumb', videoActual: 'ct-vidactual', files: 'ct-files', audio: 'ct-audio' };
             contentTypes = Object.keys(CT_IDS).filter(id => document.getElementById(CT_IDS[id]).checked);

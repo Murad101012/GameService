@@ -4,12 +4,12 @@
 # healthy just opens the Web UI; a stale/wedged listener is cleaned up first.
 set -e
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 LOG="${PHONESBRIDGE_LOG:-/tmp/phonesbridge.log}"
 PORT="${PHONESBRIDGE_PORT:-8052}"
-DLL="PC/bin/Debug/net10.0/PhonesBridge.dll"
+DLL="bin/Debug/net10.0/PhonesBridge.dll"
 URL="http://127.0.0.1:$PORT"
 
 healthy() {
@@ -55,16 +55,16 @@ if ss -ltn "( sport = :$PORT )" 2>/dev/null | grep -q LISTEN; then
 fi
 
 log "Building latest code..."
-if ! dotnet build PC/PhonesBridge.csproj --nologo >> "$LOG" 2>&1; then
+if ! dotnet build PhonesBridge.csproj --nologo >> "$LOG" 2>&1; then
     log "BUILD FAILED — see $LOG"
     exit 1
 fi
 
 log "Starting server (Production, background, log: $LOG)..."
-# Run from PC/ so the server's ContentRootPath resolves tray.py, wwwroot,
-# Pages and appsettings.json correctly.
+# Run from $ROOT so the server's ContentRootPath resolves tray-qt/tray,
+# wwwroot, Pages and appsettings.json correctly.
 (
-    cd "$ROOT/PC"
+    cd "$ROOT"
     exec nohup setsid /usr/share/dotnet/dotnet "bin/Debug/net10.0/PhonesBridge.dll" >> "$LOG" 2>&1 < /dev/null
 ) &
 
