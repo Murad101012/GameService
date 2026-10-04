@@ -131,5 +131,25 @@ namespace Audio
             StopSound(false);
             _audioSource.time = _audioPlaybackTimeSnapshotOnTrigger;
         }
+
+        /// <summary>
+        /// Gradually lowers volume to 20% while the social overlay is open (not instant).
+        /// </summary>
+        public void DimForSocialUI()
+        {
+            if (_audioSource == null) return;
+            _audioSource.DOKill();
+            _audioSource.DOFade(0.2f, 1f);
+        }
+
+        /// <summary>
+        /// Gradually restores full volume when the social overlay closes (not instant).
+        /// </summary>
+        public void RestoreSocialUI()
+        {
+            if (_audioSource == null) return;
+            _audioSource.DOKill();
+            _audioSource.DOFade(1f, 1f);
+        }
     }
 }

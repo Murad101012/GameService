@@ -233,7 +233,8 @@ public class ActionManager
     /// truth; the server keeps enforcing its own proceed cap as well.
     /// </summary>
     public void ApplyPhoneCoreSplit(string deviceName, int discoverCores, int proceedCores, int allowedCores,
-        int discoverActive = 0, int proceedActive = 0, int discoverQueued = 0, int proceedQueued = 0)
+        int discoverActive = 0, int proceedActive = 0, int discoverQueued = 0, int proceedQueued = 0,
+        int discoverPeak = 0, int proceedPeak = 0)
     {
         foreach (var run in _runs.Values.Where(r =>
             !r.IsFinished &&
@@ -248,6 +249,8 @@ public class ActionManager
             run.ProceedActive = Math.Max(0, proceedActive);
             run.DiscoverQueued = Math.Max(0, discoverQueued);
             run.ProceedQueued = Math.Max(0, proceedQueued);
+            run.DiscoverPeak = Math.Max(run.DiscoverPeak, discoverPeak);
+            run.ProceedPeak = Math.Max(run.ProceedPeak, proceedPeak);
         }
     }
 
@@ -350,6 +353,10 @@ public class ActionRunState
     public int ProceedActive { get; set; }
     public int DiscoverQueued { get; set; }
     public int ProceedQueued { get; set; }
+    /// <summary>Max live threads seen this run (interval peaks from the phone).
+    /// Proves real usage even for millisecond listings sampling would miss.</summary>
+    public int DiscoverPeak { get; set; }
+    public int ProceedPeak { get; set; }
 
     private readonly List<ActionLogLine> _log = new();
     private readonly object _logLock = new();

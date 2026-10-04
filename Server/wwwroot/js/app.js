@@ -18,6 +18,10 @@ window.fetch = async function (input, init) {
     catch (e) { await new Promise(r => setTimeout(r, 450)); return _origFetch(input, init); }
 };
 let currentPath   = '';
+// Storage root for the Browser feature on Android: '' = internal storage,
+// '__appdata__' = the app's isolated private data (invisible to other apps).
+let browseRoot = '';
+const APPDATA_ROOT = '__appdata__';
 let selectedPaths = new Set();
 let isSearchActive = false;
 let searchAbortController = null;
@@ -659,6 +663,7 @@ function selectDevice(el, name) {
 
     currentDevice = name;
     currentPath   = '';
+    browseRoot    = '';
     selectedPaths.clear();
     updateSelectionBar();
 
@@ -719,7 +724,11 @@ function openFeature(feature) {
     }
     if (feature === 'browser') {
         document.getElementById('features-panel')?.classList.add('hidden');
-        browsePath('');
+        // App Data root is Android-only (Windows has no isolated app dir here).
+        const isAndroid = ((devicePlatforms[currentDevice] || '') === 'android');
+        document.getElementById('browse-roots')?.classList.toggle('hidden', !isAndroid);
+        if (!isAndroid) browseRoot = '';
+        browsePath(browseRoot);
     } else if (feature === 'tunnel') {
         // Route the tunnel through the currently selected phone, then open the Tunnel page.
         fetch('/api/tunnel/select', {
@@ -779,6 +788,16 @@ function renderLinkTag(dev) {
         <span class="link-part p2p-part ${p2p ? 'up' : 'down'}">P2P</span><span class="link-sep">/</span>
         <span class="link-part domain-part ${domain ? 'up' : 'down'}">Domain</span>
     </span>`;
+}
+
+// ── Browser storage roots (Android): internal storage vs isolated app data ──
+function setBrowseRoot(root) {
+    browseRoot = (root === APPDATA_ROOT) ? APPDATA_ROOT : '';
+    const internalBtn = document.getElementById('root-internal-btn');
+    const appdataBtn = document.getElementById('root-appdata-btn');
+    if (internalBtn) internalBtn.classList.toggle('active', browseRoot === '');
+    if (appdataBtn) appdataBtn.classList.toggle('active', browseRoot !== '');
+    browsePath(browseRoot);
 }
 
 // ── Directory Browsing ─────────────────────────────────────────────────────
@@ -949,9 +968,43 @@ function makeDirCard(dir) {
             <div class="file-thumb-placeholder">${icon}</div>
         </div>
         <div class="file-info">
-            <div class="file-name" title="${escHtml(disabled ? (dir.accessWarning || 'Not accessible') : dir.name)}">${escHtml(dir.name)}</div>
+            <div class="file-name" title="${escHtml(disabled ? (dir.accessWarning || 'Not accessible') : dir.name)}">${escHtml(dir.name)}${(!disabled && typeof browseRoot !== 'undefined' && browseRoot === APPDATA_ROOT && isProtectedEntry(dir)) ? ' 🔒' : ''}</div>
             <div class="file-size">${escHtml(sizeText)}</div>
         </div>`;
+    if (!disabled && typeof browseRoot !== 'undefined' && browseRoot === APPDATA_ROOT) {
+        const actions = document.createElement('div');
+        actions.className = 'file-actions';
+        if (isProtectedEntry(dir)) {
+            const clear = document.createElement('button');
+            clear.className = 'file-action-btn';
+            clear.title = 'Remove everything inside (folder stays)';
+            clear.textContent = '🧹';
+            clear.addEventListener('click', (e) => { e.stopPropagation(); clearFolder(dir.relativePath, dir.name); });
+            actions.appendChild(clear);
+        } else {
+            const del = document.createElement('button');
+            del.className = 'file-action-btn';
+            del.title = 'Delete from App Data';
+            del.textContent = '🗑️';
+            del.addEventListener('click', (e) => { e.stopPropagation(); deletePath(dir.relativePath, dir.name); });
+            actions.appendChild(del);
+        }
+        card.appendChild(actions);
+    }
+    if (!disabled && typeof canCopyHere === 'function' && canCopyHere()) {
+        let actions = card.querySelector('.file-actions');
+        if (!actions) {
+            actions = document.createElement('div');
+            actions.className = 'file-actions';
+            card.appendChild(actions);
+        }
+        const cp = document.createElement('button');
+        cp.className = 'file-action-btn';
+        cp.title = 'Copy to App Data';
+        cp.textContent = '📦';
+        cp.addEventListener('click', (e) => { e.stopPropagation(); copyToAppData(dir.relativePath, dir.name); });
+        actions.appendChild(cp);
+    }
     if (disabled) {
         card.title = dir.accessWarning || 'This entry is not accessible.';
         card.addEventListener('click', () => showToast(`⚠️ ${dir.name}: ${dir.accessWarning || 'Not accessible on the device.'}`, 'warn', 6000));
@@ -987,6 +1040,8 @@ function makeFileCard(file) {
                 <button class="file-action-btn" title="Download" onclick="downloadFile(event,'${escAttr(file.relativePath)}','${escAttr(file.name)}')">⬇️</button>
                 <button class="file-action-btn" title="Select"   onclick="toggleSelect(event,this.closest('.file-card'))">☑️</button>
                 ${isMed ? `<button class="file-action-btn ai-context-btn" title="Add to AI queue" onclick="addToAIQueue(event,'${escAttr(file.relativePath)}','${escAttr(file.name)}')">🤖</button>` : ''}
+                ${(typeof browseRoot !== 'undefined' && browseRoot === APPDATA_ROOT && !isProtectedEntry(file)) ? `<button class="file-action-btn" title="Delete from App Data" onclick="event.stopPropagation();deletePath('${escAttr(file.relativePath)}','${escAttr(file.name)}')">🗑️</button>` : ''}
+                ${(typeof canCopyHere === 'function' && canCopyHere()) ? `<button class="file-action-btn" title="Copy to App Data" onclick="event.stopPropagation();copyToAppData('${escAttr(file.relativePath)}','${escAttr(file.name)}')">📦</button>` : ''}
             </div>
 
             ${isVideo ? `
@@ -1102,10 +1157,10 @@ async function loadThumbnail(card) {
     try {
         // Use data-device attribute (device ID) if set (offline mode), otherwise use currentDevice (device name)
         const deviceId = card.dataset.device || currentDevice;
-        // Offline images always serve the best cached thumbnail — never refetch due to the
-        // global thumbnail-quality setting.
-        const bestCache = !!card.dataset.device
-            && !/\.(mp4|mkv|mov|avi|webm|3gp)$/i.test(card.dataset.name || '');
+        // Offline cards always serve the best cached thumbnail — never refetch due to the
+        // global thumbnail-quality setting, and never warn when the exact frame
+        // isn't cached (frame configs change over time; any cached frame beats ⚠️).
+        const bestCache = !!card.dataset.device;
         const url = `/api/thumb/${encodeURIComponent(deviceId)}` +
             `?path=${encodeURIComponent(path)}&frameOverride=${frameOv}&qualityOverride=${qualOv}` +
             (bestCache ? '&bestCache=1' : '');
@@ -1491,6 +1546,86 @@ function closeLightbox(e) {
 
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
 
+// ── Copy to App Data (internal storage → isolated playground, Android only) ──
+function canCopyHere() {
+    return typeof browseRoot !== 'undefined' && browseRoot === '' && !!currentDevice
+        && ((devicePlatforms[currentDevice] || '') === 'android');
+}
+
+async function copyToAppData(path, name) {
+    if (!canCopyHere()) return;
+    try {
+        const r = await fetch(`/api/copy/${encodeURIComponent(currentDevice)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths: [path] })
+        });
+        if (!r.ok) {
+            let msg = `HTTP ${r.status}`;
+            try { const j = await r.json(); if (j && j.message) msg = j.message; } catch { }
+            showToast(`❌ Copy failed: ${msg}`, 'err', 5000);
+            return;
+        }
+        showToast(`📦 Copying "${name}" to App Data — watch the progress notification.`, 'ok', 4000);
+    } catch (e) {
+        showToast(`❌ Copy failed: ${e.message}`, 'err', 5000);
+    }
+}
+
+// ── Clear folder contents (protected App Data dirs: folder stays) ─────────
+async function clearFolder(path, name) {
+    if (!canDeleteHere()) return;
+    if (!confirm(`Remove everything inside "${name}"? The folder itself stays.`)) return;
+    try {
+        const r = await fetch(`/api/clear/${encodeURIComponent(currentDevice)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path })
+        });
+        let msg = `HTTP ${r.status}`;
+        try { const j = await r.json(); if (j && j.message) msg = j.message; } catch { }
+        if (!r.ok) {
+            showToast(`❌ Clear failed: ${msg}`, 'err', 5000);
+            return;
+        }
+        showToast(`🧹 ${msg}`, 'ok', 3000);
+        browsePath(currentPath);
+    } catch (e) {
+        showToast(`❌ Clear failed: ${e.message}`, 'err', 5000);
+    }
+}
+
+// ── Delete (App Data playground only; protected entries excluded) ──────────
+function canDeleteHere() {
+    return typeof browseRoot !== 'undefined' && browseRoot === APPDATA_ROOT && !!currentDevice;
+}
+
+function isProtectedEntry(entry) {
+    return !!(entry && (entry.protected || entry.Protected));
+}
+
+async function deletePath(path, name) {
+    if (!canDeleteHere()) return;
+    if (!confirm(`Delete "${name}" from App Data? This cannot be undone.`)) return;
+    try {
+        const r = await fetch(`/api/delete/${encodeURIComponent(currentDevice)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path })
+        });
+        if (!r.ok) {
+            let msg = `HTTP ${r.status}`;
+            try { const j = await r.json(); if (j && j.message) msg = j.message; } catch { }
+            showToast(`❌ Delete failed: ${msg}`, 'err', 5000);
+            return;
+        }
+        showToast(`🗑️ Deleted "${name}".`, 'ok', 3000);
+        browsePath(currentPath);
+    } catch (e) {
+        showToast(`❌ Delete failed: ${e.message}`, 'err', 5000);
+    }
+}
+
 async function downloadFile(e, path, name) {
     if (e) e.stopPropagation();
     const isImg = /\.(jpe?g|png|gif|webp|heic|bmp)$/i.test(name || '');
@@ -1635,7 +1770,7 @@ function renderBreadcrumb(path) {
     const rootBtn = document.createElement('span');
     rootBtn.className = 'breadcrumb-item';
     rootBtn.textContent = currentDevice || 'Device';
-    rootBtn.addEventListener('click', () => browsePath(''));
+    rootBtn.addEventListener('click', () => browsePath(browseRoot));
     nav.appendChild(rootBtn);
 
     if (!path) {
@@ -1644,6 +1779,8 @@ function renderBreadcrumb(path) {
     }
 
     const parts = path.split(/[\\/]/).filter(Boolean);
+    // Map the virtual root token to a friendly label.
+    const labelOf = (part) => part === APPDATA_ROOT ? '📦 App Data' : part;
     let cumulative = '';
     for (let i = 0; i < parts.length; i++) {
         cumulative += (cumulative ? '/' : '') + parts[i];
@@ -1655,12 +1792,12 @@ function renderBreadcrumb(path) {
         if (i === parts.length - 1) {
             const curr = document.createElement('span');
             curr.className   = 'breadcrumb-current';
-            curr.textContent = parts[i];
+            curr.textContent = labelOf(parts[i]);
             nav.appendChild(curr);
         } else {
             const btn  = document.createElement('span');
             btn.className   = 'breadcrumb-item';
-            btn.textContent = parts[i];
+            btn.textContent = labelOf(parts[i]);
             const snapPath  = cumulative;
             btn.addEventListener('click', () => browsePath(snapPath));
             nav.appendChild(btn);

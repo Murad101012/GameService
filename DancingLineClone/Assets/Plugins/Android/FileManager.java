@@ -18,6 +18,86 @@ public class FileManager {
     private static String cachedRootPath = null;
     public static final AtomicBoolean isSearchCancelled = new AtomicBoolean(false);
 
+    /** Virtual root token addressing the app-private files dir (see resolvePath). */
+    public static final String APPDATA_PREFIX = "__appdata__";
+
+    /** Our own folder inside app-private data. Created on demand; shows up in
+     * the App Data browser like any other folder. */
+    public static final String APP_FOLDER_NAME = "GameService";
+
+    /** Folders inside the App Data root that must always exist: created at
+     * startup, listed with protected=true, never deletable (server + phone
+     * both enforce this). */
+    public static final java.util.Set<String> PROTECTED_FOLDERS =
+        new java.util.HashSet<>(java.util.Arrays.asList("Transcoded Videos"));
+
+    /** App-Data root actually served to the server: our playground folder.
+     * The server sees its INSIDE as "/" — the rest of app-private data
+     * (cache/, databases/, ...) stays out of reach. */
+    public static File getAppDataRoot(android.content.Context ctx) {
+        if (ctx == null || ctx.getApplicationInfo() == null) return null;
+        File dir = new File(new File(ctx.getApplicationInfo().dataDir), APP_FOLDER_NAME);
+        if (!dir.exists() && !dir.mkdirs()) {
+            SignalRClient.sendClassLog("FileManager", "Error", "Could not create app folder: " + dir.getAbsolutePath());
+            return null;
+        }
+        // Required subfolders must always exist.
+        for (String sub : PROTECTED_FOLDERS) {
+            File subDir = new File(dir, sub);
+            if (!subDir.exists() && !subDir.mkdirs()) {
+                SignalRClient.sendClassLog("FileManager", "Error", "Could not create protected folder: " + subDir.getAbsolutePath());
+            }
+        }
+        return dir;
+    }
+
+    /** Creates our private folder if missing. Returns it, or null when unavailable. */
+    public static File ensureAppFolder() {
+        return getAppDataRoot(SignalRClient.getAppContext());
+    }
+
+    /** Same, with an explicit Context (usable at game start, before connect). */
+    public static File ensureAppFolder(android.content.Context ctx) {
+        File dir = getAppDataRoot(ctx);
+        if (dir != null) {
+            SignalRClient.sendClassLog("FileManager", "Message", "App folder ready: " + dir.getAbsolutePath());
+        }
+        return dir;
+    }
+
+    // Generated-thumbnail LRU. The server fetches each thumb as 1 info call +
+    // N chunk calls; without this cache EVERY call re-ran the full
+    // decode+scale+encode, so a 4-chunk thumb cost 5 full generations and all
+    // cores burned on redundant work (thermal throttle, 1-2 files/s tails).
+    // Keyed by path|mtime|frame|quality, so the info call warms it and every
+    // chunk call hits. Bounded (12 entries ≈ a few MB), access-order eviction,
+    // synchronized because pool threads share it.
+    private static final int THUMB_CACHE_MAX = 12;
+    private static final java.util.Map<String, MediaHelper.ThumbInfo> thumbCache =
+        new java.util.LinkedHashMap<String, MediaHelper.ThumbInfo>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(java.util.Map.Entry<String, MediaHelper.ThumbInfo> e) {
+                return size() > THUMB_CACHE_MAX;
+            }
+        };
+
+    private static String thumbCacheKey(String absPath, long lastModified, float frame, float quality) {
+        return absPath + "|" + lastModified + "|" + frame + "|" + quality;
+    }
+
+    private static MediaHelper.ThumbInfo getThumbCached(String absPath, long lastModified, float frame, float quality) {
+        String key = thumbCacheKey(absPath, lastModified, frame, quality);
+        synchronized (thumbCache) {
+            MediaHelper.ThumbInfo hit = thumbCache.get(key);
+            if (hit != null) return hit;
+        }
+        MediaHelper.ThumbInfo fresh = MediaHelper.getLowResBytesWithOverride(absPath, lastModified, frame, quality);
+        synchronized (thumbCache) {
+            thumbCache.put(key, fresh);
+        }
+        return fresh;
+    }
+
     public static String getRootStoragePath() {
         if (cachedRootPath == null) {
             try {
@@ -43,6 +123,30 @@ public class FileManager {
             String decodedPath = URLDecoder.decode(rawPath, "UTF-8").replace('\\', '/');
             while (decodedPath.startsWith("/")) {
                 decodedPath = decodedPath.substring(1);
+            }
+
+            // App-private playground (isolated: invisible to other apps, file
+            // managers and gallery). Addressed as "__appdata__[/sub/path]" but
+            // served from <data>/GameService, whose INSIDE the server sees as
+            // "/". ONLY this subtree is allowed outside external storage.
+            if (decodedPath.equals(APPDATA_PREFIX) || decodedPath.startsWith(APPDATA_PREFIX + "/")) {
+                String sub = decodedPath.equals(APPDATA_PREFIX)
+                        ? "" : decodedPath.substring(APPDATA_PREFIX.length() + 1);
+                android.content.Context ctx = SignalRClient.getAppContext();
+                File base = getAppDataRoot(ctx);
+                if (base == null) {
+                    SignalRClient.sendClassLog("FileManager", "Error", "AppData root requested but unavailable");
+                    return null;
+                }
+                File targetFile = sub.trim().isEmpty() ? base : new File(base, sub);
+                String canonicalTarget = targetFile.getCanonicalPath();
+                String canonicalBase = base.getCanonicalPath();
+                if (canonicalTarget.toLowerCase(Locale.ROOT).startsWith(canonicalBase.toLowerCase(Locale.ROOT))) {
+                    return new File(canonicalTarget);
+                } else {
+                    SignalRClient.sendClassLog("FileManager", "Error", "Access denied: Path '" + canonicalTarget + "' outside app data '" + canonicalBase + "'");
+                    return null;
+                }
             }
 
             String root = getRootStoragePath();
@@ -131,14 +235,21 @@ public class FileManager {
                     if (file.isDirectory()) {
                         String dirRelPath = cleanRelPath.trim().isEmpty() ?
                             file.getName() : cleanRelPath.replaceAll("/+$", "") + "/" + file.getName();
-                        dirs.add(new FileNodeDto(
+                        FileNodeDto dirNode = new FileNodeDto(
                             file.getName(),
                             dirRelPath,
                             true,
                             0,
                             0,
                             formatIsoDate(file.lastModified())
-                        ));
+                        );
+                        // Protected system folders (only directly under the App
+                        // Data root) are browsable but never deletable.
+                        String listedFrom = cleanRelPath.trim().replaceAll("^/+", "").replaceAll("/+$", "");
+                        if (APPDATA_PREFIX.equals(listedFrom) && PROTECTED_FOLDERS.contains(file.getName())) {
+                            dirNode.prot = true;
+                        }
+                        dirs.add(dirNode);
                     }
                 }
                 // For efficiency: if fileLimit>0, stop after startIndex+fileLimit matches
@@ -206,7 +317,7 @@ public class FileManager {
             long originalPreviewLength = 0;
             boolean isMedia = MediaHelper.isImageFile(targetFile.getPath()) || MediaHelper.isVideoFile(targetFile.getPath());
             if (isLowRes && isMedia) {
-                MediaHelper.ThumbInfo thumbInfo = MediaHelper.getLowResBytesWithOverride(targetFile.getPath(), targetFile.lastModified(), frameOverride, qualityOverride);
+                MediaHelper.ThumbInfo thumbInfo = getThumbCached(targetFile.getPath(), targetFile.lastModified(), frameOverride, qualityOverride);
                 if (thumbInfo.thumbBytes.length > 0) {
                     fileSize = thumbInfo.thumbBytes.length;
                 }
@@ -228,7 +339,7 @@ public class FileManager {
         }
     }
 
-    private static File[] tryShellListFiles(File dir) {
+    static File[] tryShellListFiles(File dir) {
         List<File> list = new ArrayList<>();
         try {
             Process process = Runtime.getRuntime().exec(new String[]{"ls", "-1", dir.getAbsolutePath()});
@@ -268,7 +379,7 @@ public class FileManager {
         int optimizedChunkSize = Math.max(chunkSize, 524288);
 
         if (isLowRes && (MediaHelper.isImageFile(targetFile.getPath()) || MediaHelper.isVideoFile(targetFile.getPath()))) {
-            MediaHelper.ThumbInfo lowResInfo = MediaHelper.getLowResBytesWithOverride(targetFile.getPath(), targetFile.lastModified(), frameOverride, qualityOverride);
+            MediaHelper.ThumbInfo lowResInfo = getThumbCached(targetFile.getPath(), targetFile.lastModified(), frameOverride, qualityOverride);
             byte[] lowResData = lowResInfo.thumbBytes;
             if (lowResData.length > 0) {
                 if (offset >= lowResData.length) return new byte[0];
@@ -297,6 +408,27 @@ public class FileManager {
             SignalRClient.sendClassLog("FileManager", "Error", "Failed to read chunk for " + targetFile.getPath() + ": " + e.getMessage());
             return new byte[0];
         }
+    }
+
+    public static boolean deleteRecursive(File target) {
+        boolean ok = true;
+        try {
+            if (target == null || !target.exists()) return false;
+            if (target.isDirectory()) {
+                File[] kids = target.listFiles();
+                if (kids != null) {
+                    for (File kid : kids) {
+                        if (!deleteRecursive(kid)) ok = false;
+                    }
+                }
+            }
+            if (!target.delete()) ok = false;
+        } catch (Exception e) {
+            SignalRClient.sendClassLog("FileManager", "Error", "Delete failed for " +
+                (target != null ? target.getAbsolutePath() : "?") + ": " + e.getMessage());
+            return false;
+        }
+        return ok;
     }
 
     // RECURSIVE SEARCH ENGINE WITH CANCELLATION

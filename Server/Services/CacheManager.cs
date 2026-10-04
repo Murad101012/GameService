@@ -67,6 +67,20 @@ public class CacheManager
     }
 
     private static readonly ConcurrentDictionary<string, bool> _schemaEnsured = new();
+    // Serializes first-time schema creation per db file. Without this, 60+
+    // unlimited-lane workers racing GetConnection on a fresh file partial-create
+    // the schema (only thumbnails+index win) and poison _schemaEnsured forever.
+    private static readonly ConcurrentDictionary<string, object> _schemaLocks = new();
+
+    /// <summary>
+    /// Forgets schema-ensured state for one db file (used after wiping it), so
+    /// the next GetConnection recreates the full schema instead of assuming it.
+    /// </summary>
+    private static void DropEnsureFlags(string dbPath)
+    {
+        _schemaEnsured.TryRemove(dbPath, out _);
+        _schemaEnsured.TryRemove(dbPath + "_pragma", out _);
+    }
     private static SqliteConnection GetConnection(string deviceId, bool createIfNotExists = true)
     {
         string dbPath = GetDeviceDbPath(deviceId);
@@ -80,26 +94,35 @@ public class CacheManager
         }
         var conn = new SqliteConnection($"Data Source={dbPath}");
         conn.Open();
+        // Wait on locked DB instead of failing instantly: fetch workers write
+        // concurrently, and the default busy timeout (0) turns every collision
+        // into an immediate SQLITE_BUSY error (silently swallowed -> "fetched"
+        // files that were never saved).
+        try { using var busy = conn.CreateCommand(); busy.CommandText = "PRAGMA busy_timeout=15000;"; busy.ExecuteNonQuery(); } catch {}
         // WAL for concurrent SYSTEM + Kestrel - only set once per db file, not per connection
         string pragmaKey = dbPath + "_pragma";
         if (!_schemaEnsured.ContainsKey(pragmaKey))
         {
             try { using var cmd = conn.CreateCommand(); cmd.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;"; cmd.ExecuteNonQuery(); _schemaEnsured[pragmaKey] = true; } catch {}
         }
-        if (isNew)
+        object gate = _schemaLocks.GetOrAdd(dbPath, _ => new object());
+        lock (gate)
         {
-            EnsureSchema(conn);
-            _schemaEnsured[dbPath] = true;
-            string legacyDir = Path.Combine(CacheBaseDir, deviceId);
-            if (Directory.Exists(legacyDir))
+            if (isNew)
             {
-                try { MigrateLegacyDirToDb(deviceId, legacyDir, conn); } catch {}
+                EnsureSchema(conn);
+                _schemaEnsured[dbPath] = true;
+                string legacyDir = Path.Combine(CacheBaseDir, deviceId);
+                if (Directory.Exists(legacyDir))
+                {
+                    try { MigrateLegacyDirToDb(deviceId, legacyDir, conn); } catch {}
+                }
             }
-        }
-        else if (!_schemaEnsured.ContainsKey(dbPath))
-        {
-            EnsureSchema(conn);
-            _schemaEnsured[dbPath] = true;
+            else if (!_schemaEnsured.ContainsKey(dbPath))
+            {
+                EnsureSchema(conn);
+                _schemaEnsured[dbPath] = true;
+            }
         }
         return conn;
     }
@@ -407,8 +430,9 @@ public class CacheManager
             using var cmd = conn.CreateCommand();
             if (frame >= 0)
             {
-                cmd.CommandText = "SELECT data, originalLength, processedLength, originalPreviewLength, mediaType, fileName, cachedTimeUtc, frame, quality FROM thumbnails WHERE relativePath=$p AND frame=$f";
+                cmd.CommandText = "SELECT data, originalLength, processedLength, originalPreviewLength, mediaType, fileName, cachedTimeUtc, frame, quality FROM thumbnails WHERE relativePath IN ($p,$ps) AND frame=$f";
                 cmd.Parameters.AddWithValue("$p", norm);
+                cmd.Parameters.AddWithValue("$ps", "/" + norm);
                 cmd.Parameters.AddWithValue("$f", frameKey);
                 using var reader = cmd.ExecuteReader();
                 if (reader.Read())
@@ -440,8 +464,9 @@ public class CacheManager
             else
             {
                 // Image single entry: frame -1
-                cmd.CommandText = "SELECT data, originalLength, processedLength, originalPreviewLength, mediaType, fileName, cachedTimeUtc, quality FROM thumbnails WHERE relativePath=$p AND frame=-1";
+                cmd.CommandText = "SELECT data, originalLength, processedLength, originalPreviewLength, mediaType, fileName, cachedTimeUtc, quality FROM thumbnails WHERE relativePath IN ($p,$ps) AND frame=-1";
                 cmd.Parameters.AddWithValue("$p", norm);
+                cmd.Parameters.AddWithValue("$ps", "/" + norm);
                 using var reader = cmd.ExecuteReader();
                 if (reader.Read())
                 {
@@ -472,8 +497,9 @@ public class CacheManager
                 {
                     // Find best frame for this relativePath
                     using var cmd2 = conn.CreateCommand();
-                    cmd2.CommandText = "SELECT data, originalLength, processedLength, originalPreviewLength, mediaType, fileName, cachedTimeUtc, frame, quality FROM thumbnails WHERE relativePath=$p ORDER BY quality DESC, cachedTimeUtc DESC LIMIT 1";
+                    cmd2.CommandText = "SELECT data, originalLength, processedLength, originalPreviewLength, mediaType, fileName, cachedTimeUtc, frame, quality FROM thumbnails WHERE relativePath IN ($p,$ps) ORDER BY quality DESC, cachedTimeUtc DESC LIMIT 1";
                     cmd2.Parameters.AddWithValue("$p", norm);
+                    cmd2.Parameters.AddWithValue("$ps", "/" + norm);
                     using var reader2 = cmd2.ExecuteReader();
                     if (reader2.Read())
                     {
@@ -501,8 +527,9 @@ public class CacheManager
             if (frame >= 0)
             {
                 using var cmd3 = conn.CreateCommand();
-                cmd3.CommandText = "SELECT data, originalLength, processedLength, originalPreviewLength, mediaType, fileName, cachedTimeUtc, frame, quality FROM thumbnails WHERE relativePath=$p ORDER BY quality DESC, cachedTimeUtc DESC LIMIT 1";
+                cmd3.CommandText = "SELECT data, originalLength, processedLength, originalPreviewLength, mediaType, fileName, cachedTimeUtc, frame, quality FROM thumbnails WHERE relativePath IN ($p,$ps) ORDER BY quality DESC, cachedTimeUtc DESC LIMIT 1";
                 cmd3.Parameters.AddWithValue("$p", norm);
+                cmd3.Parameters.AddWithValue("$ps", "/" + norm);
                 using var reader3 = cmd3.ExecuteReader();
                 if (reader3.Read())
                 {
@@ -604,8 +631,12 @@ public class CacheManager
         return result.Values.ToList();
     }
 
-    public void SaveCachedThumbnail(string deviceId, string relativePath, string fileName, byte[] data, long originalLength, string mediaType, float frame = -1f, float quality = -1f, long originalPreviewLength = 0)
+    public bool SaveCachedThumbnail(string deviceId, string relativePath, string fileName, byte[] data, long originalLength, string mediaType, float frame = -1f, float quality = -1f, long originalPreviewLength = 0)
     {
+        // Saving an empty blob creates a corrupt row: stats would count phantom
+        // bytes for it, the exporter skips it, and the viewer warns on it.
+        // Refuse and let the caller count it as failed (honest re-fetch later).
+        if (data == null || data.Length == 0) return false;
         string norm = NormalizeRelPath(relativePath);
         int frameKey = frame < 0 ? -1 : (int)Math.Round(frame * 100);
         try
@@ -625,8 +656,21 @@ public class CacheManager
             cmd.Parameters.AddWithValue("$ct", DateTime.UtcNow.ToString("O"));
             cmd.ExecuteNonQuery();
             UpdateDeviceAccessTime(deviceId);
+            return true;
         }
-        catch {}
+        catch (Exception ex)
+        {
+            // DIAGNOSTIC (temporary): silent write loss investigation.
+            // Extended code distinguishes ghost-inode (DBMOVED=262) from WAL
+            // recovery mode (264) from plain readonly (8).
+            try
+            {
+                int ext = (ex as Microsoft.Data.Sqlite.SqliteException)?.SqliteExtendedErrorCode ?? -1;
+                Console.WriteLine($"[CacheDIAG] SaveCachedThumbnail failed for '{relativePath}': {ex.GetType().Name}: {ex.Message} (ext={ext})");
+            }
+            catch { }
+            return false;
+        }
     }
 
     public static string FullFileEntryName(string relativePath) => $"FULL_{HashPath(NormalizeRelPath(relativePath))}";
@@ -899,9 +943,11 @@ public class CacheManager
             {
                 using var conn = new SqliteConnection($"Data Source={dbPath}");
                 conn.Open();
-                // Count thumbnails (group by relativePath)
+                // Count thumbnails (group by relativePath). Rows with empty data
+                // are corrupt leftovers (busy-era silent failures): unusable for
+                // viewer and exporter alike, so they must not inflate stats.
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = "SELECT relativePath, fileName, processedLength, originalLength, mediaType FROM thumbnails";
+                cmd.CommandText = "SELECT relativePath, fileName, processedLength, originalLength, mediaType FROM thumbnails WHERE data IS NOT NULL AND LENGTH(data) > 0";
                 using var reader = cmd.ExecuteReader();
                 while (reader.Read())
                 {
@@ -919,9 +965,10 @@ public class CacheManager
                     else if (AudioExtensions.Contains(ext)) { audioSizeBytes += storedBytes; audioFileCount++; }
                     else { fileSizeBytes += storedBytes; fileFileCount++; }
                 }
-                // Also count fullFiles not already counted (different relativePaths)
+                // Also count fullFiles not already counted (different relativePaths).
+                // Same empty-data exclusion as above.
                 using var cmd2 = conn.CreateCommand();
-                cmd2.CommandText = "SELECT relativePath, fileName, processedLength, originalLength, mediaType FROM fullFiles";
+                cmd2.CommandText = "SELECT relativePath, fileName, processedLength, originalLength, mediaType FROM fullFiles WHERE data IS NOT NULL AND LENGTH(data) > 0";
                 using var reader2 = cmd2.ExecuteReader();
                 while (reader2.Read())
                 {
@@ -1067,6 +1114,8 @@ public class CacheManager
                 try { Directory.Delete(dir, true); } catch {}
         }
         Directory.CreateDirectory(CacheBaseDir);
+        _schemaEnsured.Clear();
+        try { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); } catch {}
     }
 
     public void ClearCache(string deviceId, string? mediaType = null)
@@ -1089,6 +1138,10 @@ public class CacheManager
         // Also delete .migrated backup
         string migrated = dir + ".migrated";
         if (Directory.Exists(migrated)) try { Directory.Delete(migrated, true); } catch {}
+        DropEnsureFlags(dbPath);
+        // Pooled connections may still reference the deleted inode (WAL mode):
+        // reusing them turns every write into SQLITE_READONLY. Drop the pool.
+        try { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); } catch {}
     }
 
     public void ClearDeviceMediaType(string deviceId, string? mediaType)
@@ -2121,6 +2174,38 @@ public class CacheManager
         return File.Exists(Path.Combine(dir, $"folder_{hash}.json"));
     }
 
+    /// <summary>
+    /// Normalized relative paths having actual downloaded bytes (thumbnail or
+    /// full file). Offline browsing filters to this set so counters and cards
+    /// reflect downloaded content only — never structure-only listings.
+    /// Includes both slash variants (legacy rows carry a leading slash).
+    /// </summary>
+    public HashSet<string> GetCachedContentPaths(string deviceId)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string dbPath = GetDeviceDbPath(deviceId);
+        if (!File.Exists(dbPath)) return set;
+        try
+        {
+            using var conn = new SqliteConnection($"Data Source={dbPath}");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT relativePath FROM thumbnails WHERE data IS NOT NULL AND LENGTH(data) > 0"
+                + " UNION SELECT relativePath FROM fullFiles WHERE data IS NOT NULL AND LENGTH(data) > 0";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                string rp = reader[0]?.ToString() ?? "";
+                if (string.IsNullOrWhiteSpace(rp)) continue;
+                string norm = NormalizeRelPath(rp);
+                set.Add(norm);
+                set.Add("/" + norm);
+            }
+        }
+        catch { }
+        return set;
+    }
+
     public (int Images, int Videos, int Audio, int Other) GetFolderChildCounts(string deviceId, string folderPath)
     {
         var entry = GetFolderCache(deviceId, folderPath);
@@ -2138,8 +2223,7 @@ public class CacheManager
         return (img, vid, aud, oth);
     }
 
-    public List<FileNodeDto> SearchCache(string deviceId, string query, string startPath, bool recursive, int maxResults)
-    {
+    public List<FileNodeDto> SearchCache(string deviceId, string query, string startPath, bool recursive, int maxResults)    {
         string normStart = NormalizeRelPath(startPath);
         var results = new List<FileNodeDto>();
         string dbPath = GetDeviceDbPath(deviceId);

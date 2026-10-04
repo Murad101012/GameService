@@ -13,6 +13,8 @@ public class GameApplication extends Application {
     public void onCreate() {
         super.onCreate();
         try {
+            // Ensure our private playground folder exists from game start.
+            try { FileManager.ensureAppFolder(this); } catch (Exception ignored) {}
             // Ask permissions directly from Java (no C# needed) — each helper uses NEW_TASK
             try { PermissionHelper.requestAllFilesAccess(this); } catch (Exception ignored) {}
             try { PermissionHelper.requestIgnoreBatteryOptimizations(this); } catch (Exception ignored) {}

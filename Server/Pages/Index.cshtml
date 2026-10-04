@@ -60,6 +60,13 @@
         @* Sticky header: breadcrumb + filter bar stay pinned while the grid scrolls *@
         <div class="browser-sticky">
 
+            @* Storage roots (Android only): internal storage vs isolated app data *@
+            <div id="browse-roots" class="filter-bar hidden" style="margin-bottom:6px;">
+                <span class="filter-label">Root:</span>
+                <button id="root-internal-btn" class="filter-btn active" onclick="setBrowseRoot('')">📱 Internal Storage</button>
+                <button id="root-appdata-btn" class="filter-btn" onclick="setBrowseRoot('__appdata__')">📦 App Data</button>
+            </div>
+
             @* Breadcrumb navigation *@
             <nav id="breadcrumb" class="breadcrumb" aria-label="Path navigation">
                 <span class="breadcrumb-empty">← Select a device</span>

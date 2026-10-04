@@ -211,6 +211,8 @@ GameObject:
   - component: {fileID: 1785521408}
   - component: {fileID: 1785521406}
   - component: {fileID: 1785521412}
+  - component: {fileID: 1785521413}
+  - component: {fileID: 1785521414}
   m_Layer: 0
   m_Name: MenuUi
   m_TagString: Untagged
@@ -296,6 +298,30 @@ MonoBehaviour:
   levelsListSo: {fileID: 11400000, guid: a019ff8ddc174aec5985f0011fde94d4, type: 2}
   sceneLoadStateEventSo: {fileID: 11400000, guid: 15bec76d7560c63179723d3d4addfb6f, type: 2}
   menuOnLevelInPreviewChangeSo: {fileID: 11400000, guid: d38089205368cd48fba20ac7eaf56cde, type: 2}
+--- !u!114 &1785521413
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1785521405}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8861330a75f84fc7b5321cb8a5e18252, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Ui.Controllers.SocialUiController
+--- !u!114 &1785521414
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1785521405}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3b20f86b790f45018a34f4513cc811d3, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Ui.ElementReferences.SocialUiElementReference
 --- !u!1 &1874162758
 GameObject:
   m_ObjectHideFlags: 0

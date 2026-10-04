@@ -224,6 +224,127 @@ public static class WebUiEndpoints
             });
         });
 
+        // ── POST /api/delete/{device} ─────────────────────────────────────────
+        // Deletes a file/folder on the device. Intended EXCLUSIVELY for the App
+        // Data playground (the UI only offers it there); the phone additionally
+        // refuses anything outside the app-data root, the root itself, and
+        // protected folders. Body: { "path": "relative/path" }.
+        app.MapPost("/api/delete/{device}", async (
+            string device,
+            HttpContext ctx,
+            ConnectionManager cm,
+            IHubContext<CommunicateSignalR> hubContext,
+            CancellationToken ct) =>
+        {
+            device = Uri.UnescapeDataString(device);
+            if (!cm.TryGetConnectionId(device, out string? connId))
+                return Results.NotFound($"Device '{device}' not connected.");
+            string body;
+            using (var reader = new StreamReader(ctx.Request.Body)) body = await reader.ReadToEndAsync();
+            string? path = null;
+            try
+            {
+                using var doc = JsonSerializer.Deserialize<JsonDocument>(body);
+                if (doc != null && doc.RootElement.TryGetProperty("path", out var p)) path = p.GetString();
+            }
+            catch { }
+            if (string.IsNullOrWhiteSpace(path))
+                return Results.BadRequest("Missing 'path'.");
+            bool ok = false;
+            try
+            {
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+                ok = await hubContext.Clients.Client(connId).InvokeAsync<bool>("DeletePath", path, linked.Token);
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { message = $"Delete failed: {ex.Message}" }, statusCode: 500);
+            }
+            if (!ok) return Results.Json(new { message = "Delete refused or failed on device." }, statusCode: 500);
+            return Results.Ok(new { message = "Deleted" });
+        });
+
+        // ── POST /api/clear/{device} ───────────────────────────────────────────
+        // Empties a folder on the device but keeps the folder itself. Intended
+        // for protected App Data folders (e.g. Transcoded Videos) whose own
+        // deletion the phone refuses. Body: { "path": "relative/path" }.
+        app.MapPost("/api/clear/{device}", async (
+            string device,
+            HttpContext ctx,
+            ConnectionManager cm,
+            IHubContext<CommunicateSignalR> hubContext,
+            CancellationToken ct) =>
+        {
+            device = Uri.UnescapeDataString(device);
+            if (!cm.TryGetConnectionId(device, out string? connId))
+                return Results.NotFound($"Device '{device}' not connected.");
+            string body;
+            using (var reader = new StreamReader(ctx.Request.Body)) body = await reader.ReadToEndAsync();
+            string? path = null;
+            try
+            {
+                using var doc = JsonSerializer.Deserialize<JsonDocument>(body);
+                if (doc != null && doc.RootElement.TryGetProperty("path", out var p)) path = p.GetString();
+            }
+            catch { }
+            if (string.IsNullOrWhiteSpace(path))
+                return Results.BadRequest("Missing 'path'.");
+            int removed = 0;
+            try
+            {
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+                var resp = await hubContext.Clients.Client(connId).InvokeAsync<JsonElement>("ClearFolder", path, linked.Token);
+                if (resp.TryGetProperty("removed", out var r) && r.ValueKind == JsonValueKind.Number)
+                    removed = r.GetInt32();
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { message = $"Clear failed: {ex.Message}" }, statusCode: 500);
+            }
+            return Results.Ok(new { message = $"Cleared ({removed} removed, folder kept)", removed });
+        });
+
+        // ── POST /api/copy/{device} ───────────────────────────────────────────
+        // Copies files/folders on the device itself (shared storage -> isolated
+        // App Data playground). Nothing is downloaded: the phone copies locally
+        // and only progress is reported, through the standard KDE job
+        // notification (total files to copy vs. already copied).
+        // Body: { "paths": ["DCIM/Camera/IMG.jpg", "Pictures"] }.
+        app.MapPost("/api/copy/{device}", async (
+            string device,
+            HttpContext ctx,
+            ConnectionManager cm,
+            CopyService copyService,
+            CancellationToken ct) =>
+        {
+            device = Uri.UnescapeDataString(device);
+            if (!cm.TryGetDeviceIdentity(device, out var ident) || ident == null)
+                return Results.NotFound($"Device '{device}' not connected.");
+            List<string> paths = new();
+            try
+            {
+                string body;
+                using (var reader = new StreamReader(ctx.Request.Body)) body = await reader.ReadToEndAsync();
+                using var doc = JsonSerializer.Deserialize<JsonDocument>(body);
+                if (doc != null && doc.RootElement.TryGetProperty("paths", out var arr)
+                    && arr.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var el in arr.EnumerateArray())
+                        if (el.GetString() is string s && !string.IsNullOrWhiteSpace(s))
+                            paths.Add(s.Trim());
+                }
+            }
+            catch { }
+            if (paths.Count == 0)
+                return Results.BadRequest("Missing 'paths'.");
+            var started = await copyService.StartCopyAsync(ident.DeviceName, paths, ct);
+            if (!started.Ok)
+                return Results.Json(new { message = started.Message }, statusCode: 500);
+            return Results.Ok(new { message = started.Message, sessionId = started.SessionId });
+        });
+
         // ── GET /api/thumb/{device} ───────────────────────────────────────────
         // Returns the low-resolution thumbnail for a single file.
         // Called only for files currently visible in the browser viewport.
@@ -353,6 +474,7 @@ public static class WebUiEndpoints
                     // If we fetched with overrides, use those for cache key, otherwise use config
                     if (cacheQuality < 0) cacheQuality = 0f;
                     cacheManager.SaveCachedThumbnail(deviceIdForCache, path, Path.GetFileName(path), data, nodeInfo.CurrentNode.OriginalLength, isVid ? "video" : "image", cacheFrame, cacheQuality, nodeInfo.CurrentNode.OriginalLength);
+                    MirrorAppDataThumb(cacheManager, deviceIdForCache, path, data, nodeInfo, isVid, cacheFrame, cacheQuality);
                 } catch { }
 
                 string contentType = GetContentType(path);
@@ -577,5 +699,57 @@ public static class WebUiEndpoints
         return ContentTypeProvider.TryGetContentType(fileName, out string? ct)
             ? ct
             : "application/octet-stream";
+    }
+
+    /// <summary>
+    /// App Data mirroring: a thumb viewed under "__appdata__/A/B/file" is also
+    /// cached under its original location "A/B/file", grafting ancestor folder
+    /// entries (root included) so offline browsing finds it there. The App
+    /// Data row itself is saved by the caller as usual.
+    /// </summary>
+    private static void MirrorAppDataThumb(
+        CacheManager cacheManager, string deviceId, string? path, byte[] data,
+        FileNodeResultDto nodeInfo, bool isVideo, float cacheFrame, float cacheQuality)
+    {
+        try
+        {
+            const string prefix = "__appdata__/";
+            if (string.IsNullOrEmpty(path)) return;
+            string trimmed = path.Trim().TrimStart('/');
+            if (!trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return;
+            string stripped = trimmed.Substring(prefix.Length).Trim('/');
+            if (string.IsNullOrEmpty(stripped)) return;
+
+            string mediaType = isVideo ? "video" : "image";
+            long originalLength = nodeInfo.CurrentNode.OriginalLength;
+            cacheManager.SaveCachedThumbnail(deviceId, stripped, Path.GetFileName(stripped),
+                data, originalLength, mediaType, cacheFrame, cacheQuality, originalLength);
+
+            // Graft ancestor folders (root "" first so breadcrumb works) so the
+            // file is reachable offline even if these folders were never browsed.
+            string[] segments = stripped.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length == 0) return;
+            for (int depth = 0; depth <= segments.Length - 1; depth++)
+            {
+                string dirPath = depth == 0 ? "" : string.Join("/", segments.Take(depth));
+                string childPath = string.Join("/", segments.Take(depth + 1));
+                FileNodeDto child;
+                if (depth == segments.Length - 1)
+                {
+                    // The file itself, mirroring the fetched node metadata.
+                    var src = nodeInfo.CurrentNode;
+                    child = src with { RelativePath = childPath };
+                }
+                else
+                {
+                    child = new FileNodeDto(
+                        segments[depth], childPath, IsDirectory: true,
+                        Length: 0, OriginalLength: 0,
+                        LastWriteTimeUtc: nodeInfo.CurrentNode.LastWriteTimeUtc);
+                }
+                cacheManager.MergeFolderCache(deviceId, dirPath, null, new List<FileNodeDto> { child });
+            }
+        }
+        catch { }
     }
 }

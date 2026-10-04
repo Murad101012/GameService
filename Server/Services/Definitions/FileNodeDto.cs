@@ -31,7 +31,10 @@ public record FileNodeDto(
     bool Disabled = false,           // greyed-out entry (no media, locked MTP device, ...)
     string? AccessWarning = null,    // tooltip/warning shown for disabled entries
     long FreeBytes = 0,
-    long TotalBytes = 0
+    long TotalBytes = 0,
+    // True for required folders inside the App Data root (e.g. Transcoded
+    // Videos): browsable, but the UI must not offer delete for them.
+    bool Protected = false
 );
 
 public record FileNodeResultDto(

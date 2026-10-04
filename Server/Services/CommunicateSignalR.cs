@@ -763,7 +763,8 @@ public class CommunicateSignalR : Hub
     // (ThreadPoolExecutor.getActiveCount), so the PC can tell sized-but-idle
     // apart from really-working cores. Extra args default to 0 for old agents.
     public void ReportCoreSplit(int discoverCores, int proceedCores, int queueSize, int allowedCores,
-        int discoverActive = 0, int proceedActive = 0, int discoverQueued = 0, int proceedQueued = 0)
+        int discoverActive = 0, int proceedActive = 0, int discoverQueued = 0, int proceedQueued = 0,
+        int discoverPeak = 0, int proceedPeak = 0)
     {
         try
         {
@@ -771,7 +772,7 @@ public class CommunicateSignalR : Hub
                 .FirstOrDefault(d => d.ConnectionId == Context.ConnectionId);
             if (device == null) return;
             _actionManager.ApplyPhoneCoreSplit(device.DeviceName, discoverCores, proceedCores, allowedCores,
-                discoverActive, proceedActive, discoverQueued, proceedQueued);
+                discoverActive, proceedActive, discoverQueued, proceedQueued, discoverPeak, proceedPeak);
         }
         catch { }
     }

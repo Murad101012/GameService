@@ -7,30 +7,105 @@
         <ui:VisualElement name="Spc_Top" class="u-flex-spacer"/>
         <ui:VisualElement name="Cont_DragZone" class="cont-carousel-viewport">
             <ui:VisualElement name="Cont_Carousel" class="cont-carousel-film-level-viewport">
-
-                <ui:VisualElement name="Piano" class="btn-level" >
-                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url('project://database/Assets/Scenes/Piano/Image/preview.png');" />
+                <ui:VisualElement name="Piano" class="btn-level">
+                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url(&quot;project://database/Assets/Scenes/Piano/Image/preview.png?fileID=240456465&amp;guid=9e02e6ab9582cab31a7f3037b34a0353&amp;type=3#preview_0&quot;);"/>
                 </ui:VisualElement>
-
-                <ui:VisualElement name="Neon Rose" class="btn-level" >
-                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url('project://database/Assets/Scenes/NeonRose/Image/OIP.png');" />
+                <ui:VisualElement name="Neon Rose" class="btn-level">
+                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url(&quot;project://database/Assets/Scenes/NeonRose/Image/OIP.png?fileID=21300000&amp;guid=7c858dcd6f4055be98d233da4def3c9d&amp;type=3#OIP&quot;);"/>
                 </ui:VisualElement>
-
-                <ui:VisualElement name="LevelCreateTemplate" class="btn-level" >
-                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url('project://database/Assets/Scenes/Piano/Image/preview.png');" />
+                <ui:VisualElement name="LevelCreateTemplate" class="btn-level">
+                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url(&quot;project://database/Assets/Scenes/Piano/Image/preview.png?fileID=240456465&amp;guid=9e02e6ab9582cab31a7f3037b34a0353&amp;type=3#preview_0&quot;);"/>
                 </ui:VisualElement>
-
-                <ui:VisualElement name="Neon Rose" class="btn-level" >
-                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url('project://database/Assets/Scenes/NeonRose/Image/OIP.png');" />
+                <ui:VisualElement name="Neon Rose" class="btn-level">
+                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url(&quot;project://database/Assets/Scenes/NeonRose/Image/OIP.png?fileID=21300000&amp;guid=7c858dcd6f4055be98d233da4def3c9d&amp;type=3#OIP&quot;);"/>
                 </ui:VisualElement>
-
-                <ui:VisualElement name="Piano" class="btn-level" >
-                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url('project://database/Assets/Scenes/Piano/Image/preview.png');" />
+                <ui:VisualElement name="Piano" class="btn-level">
+                    <ui:VisualElement name="Btn_Background" class="btn-level-image" style="background-image: url(&quot;project://database/Assets/Scenes/Piano/Image/preview.png?fileID=240456465&amp;guid=9e02e6ab9582cab31a7f3037b34a0353&amp;type=3#preview_0&quot;);"/>
                 </ui:VisualElement>
-
-</ui:VisualElement >
+            </ui:VisualElement>
         </ui:VisualElement>
         <ui:VisualElement name="Spc_Top" class="u-flex-spacer"/>
         <ui:Slider value="0" high-value="-1" name="Slider_Carousel" fill="false" style="width: 80%; justify-content: center; align-self: center; align-content: flex-start;"/>
+        <ui:Button name="Btn_Profile" text="👤" class="btn-profile"/>
+        <ui:VisualElement name="Social_Layer" class="social-layer" style="display: none; visibility: visible;">
+            <ui:VisualElement name="Social_Window" class="social-window">
+                <ui:Label name="Lbl_SocialTitle" text="Profile" class="social-title"/>
+                <ui:VisualElement name="Social_AuthView" class="social-view">
+                    <ui:VisualElement name="Social_AuthTabs" class="social-tabs">
+                        <ui:Button name="Btn_ShowLogin" text="Login" class="social-tab"/>
+                        <ui:Button name="Btn_ShowRegister" text="Register" class="social-tab"/>
+                    </ui:VisualElement>
+                    <ui:VisualElement name="Social_AuthRow1" class="social-auth-row">
+                        <ui:VisualElement class="social-auth-pair">
+                            <ui:Label text="Username" class="social-caption"/>
+                            <ui:TextField name="Fld_UserName"/>
+                        </ui:VisualElement>
+                        <ui:VisualElement class="social-auth-pair">
+                            <ui:Label text="Password" class="social-caption"/>
+                            <ui:TextField name="Fld_Password"/>
+                        </ui:VisualElement>
+                    </ui:VisualElement>
+                    <ui:VisualElement name="Social_AuthRow2" class="social-auth-row">
+                        <ui:VisualElement class="social-auth-pair">
+                            <ui:Label text="First name" class="social-caption"/>
+                            <ui:TextField name="Fld_FirstName"/>
+                        </ui:VisualElement>
+                        <ui:VisualElement class="social-auth-pair">
+                            <ui:Label text="Last name" class="social-caption"/>
+                            <ui:TextField name="Fld_LastName"/>
+                        </ui:VisualElement>
+                    </ui:VisualElement>
+                    <ui:VisualElement name="Social_AuthRow3" class="social-auth-row">
+                        <ui:VisualElement class="social-auth-pair">
+                            <ui:Label text="Nickname" class="social-caption"/>
+                            <ui:TextField name="Fld_NickName"/>
+                        </ui:VisualElement>
+                        <ui:VisualElement class="social-auth-pair">
+                            <ui:Label text="Gender" class="social-caption"/>
+                            <ui:VisualElement name="Social_GenderRow" class="social-gender-row">
+                                <ui:Button name="Btn_Gender0" text="Male" class="social-tab"/>
+                                <ui:Button name="Btn_Gender1" text="Female" class="social-tab"/>
+                                <ui:Button name="Btn_Gender2" text="Helicopter" class="social-tab"/>
+                            </ui:VisualElement>
+                        </ui:VisualElement>
+                    </ui:VisualElement>
+                    <ui:Label name="Lbl_BirthCaption" text="Birth date" class="social-caption"/>
+                    <ui:VisualElement name="Social_BirthRow" class="social-birth-row">
+                        <ui:Label text="Y" class="social-birth-label"/>
+                        <ui:TextField name="Fld_BirthYear" class="social-birth-field" max-length="4"/>
+                        <ui:Label text="M" class="social-birth-label"/>
+                        <ui:TextField name="Fld_BirthMonth" class="social-birth-field" max-length="2"/>
+                        <ui:Label text="D" class="social-birth-label"/>
+                        <ui:TextField name="Fld_BirthDay" class="social-birth-field" max-length="2"/>
+                    </ui:VisualElement>
+                    <ui:Button name="Btn_Process" text="Process" class="social-process"/>
+                </ui:VisualElement>
+                <ui:VisualElement name="Social_MainView" class="social-view" style="display: none;">
+                    <ui:VisualElement name="Social_MainTabs" class="social-tabs">
+                        <ui:Button name="Btn_TabFriends" text="Friends" class="social-tab"/>
+                        <ui:Button name="Btn_TabRequests" text="Friend Requests" class="social-tab"/>
+                        <ui:Button name="Btn_TabAccount" text="Account" class="social-tab"/>
+                    </ui:VisualElement>
+                    <ui:VisualElement name="Social_RequestsSub" class="social-tabs" style="display: none;">
+                        <ui:Button name="Btn_ReqReceived" text="You Received" class="social-tab"/>
+                        <ui:Button name="Btn_ReqSent" text="You Send" class="social-tab"/>
+                    </ui:VisualElement>
+                    <ui:VisualElement name="Social_SearchRow" class="social-search-row" style="display: none;">
+                        <ui:VisualElement name="Social_SearchWrap" class="social-search-wrap">
+                            <ui:TextField name="Fld_SearchId"/>
+                            <ui:Label name="Lbl_SearchPlaceholder" text="Write ID to send friend request" picking-mode="Ignore" class="social-search-placeholder"/>
+                        </ui:VisualElement>
+                        <ui:Button name="Btn_SearchSend" text="Send" class="social-tab"/>
+                    </ui:VisualElement>
+                    <ui:VisualElement name="Social_AccountRow" class="social-tabs" style="display: none;">
+                        <ui:Button name="Btn_Logout" text="Logout" class="social-tab"/>
+                        <ui:Button name="Btn_DeleteAccount" text="Delete Account" class="social-tab social-danger"/>
+                    </ui:VisualElement>
+                    <ui:ScrollView name="Social_ContentList" class="social-list"/>
+                </ui:VisualElement>
+                <ui:Label name="Lbl_SocialMessage" text="" class="social-message"/>
+                <ui:Button name="Btn_BackToMenu" text="Back to the Menu" class="social-back"/>
+            </ui:VisualElement>
+        </ui:VisualElement>
     </ui:VisualElement>
 </ui:UXML>

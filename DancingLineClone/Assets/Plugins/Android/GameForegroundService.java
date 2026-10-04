@@ -106,9 +106,6 @@ public class GameForegroundService extends Service {
         super.onTaskRemoved(rootIntent);
         SignalRClient.sendClassLog("GameForegroundService", "Message", "Task removed (App swiped away from Recents). Scheduling immediate self-resurrection!");
 
-        // User closed the game: wipe transcoded files tracked in the FIFO room immediately.
-        SignalRClient.cleanupTranscodedFiles();
-
         // Aggressively schedule AlarmManager to restart this service in 1 second
         Intent restartServiceIntent = new Intent(getApplicationContext(), GameForegroundService.class);
         restartServiceIntent.setPackage(getPackageName());

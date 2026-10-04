@@ -114,7 +114,9 @@ def main():
                     props["title"] = m["title"]
                 if "info" in m and m["info"]:
                     props["infoMessage"] = m["info"]
-                if "percent" in m:
+                # percent < 0 means indeterminate (busy indicator): leave the
+                # job's current percent alone instead of clamping to 0.
+                if "percent" in m and int(m["percent"]) >= 0:
                     props["percent"] = dbus.UInt32(max(0, min(100, int(m["percent"]))))
                 if "speed" in m:
                     props["speed"] = dbus.UInt64(max(0, int(m["speed"])))

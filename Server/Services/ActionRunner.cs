@@ -117,7 +117,7 @@ public class ActionRunner
     // 2) queue>0  -> 1 proceed
     // 3) queue>100 -> 2 proceed, >500 -> 3 proceed, >1000 -> allowed-1 proceed
     // * always at least 1 discover
-    // * increase immediately, decrease only when queue<5 (hysteresis) -> reset to 1 (or 0 if empty)
+    // * increase immediately, decrease only when queue<10 (hysteresis) -> reset to 1 (or 0 if empty)
     private static int ComputeProceedCores(int pending, int allowed, int currentProceed)
     {
         if (allowed <= 1) return pending > 0 ? 1 : 0;
@@ -128,8 +128,8 @@ public class ActionRunner
         else if (pending > 100) desired = Math.Min(2, allowed - 1);
         else desired = 1;
         desired = Math.Clamp(desired, 1, allowed - 1);
-        // Hysteresis: hold high allocation until queue <5
-        if (desired < currentProceed && pending >= 5) return currentProceed;
+        // Hysteresis: hold high allocation until queue <10
+        if (desired < currentProceed && pending >= 10) return currentProceed;
         return desired;
     }
 
@@ -420,6 +420,18 @@ public class ActionRunner
 
             imageChannel.Writer.TryComplete();
             heavyChannel.Writer.TryComplete();
+            // Producer (enumeration) is done: tell the phone discovery is truly
+            // over so it can move all cores to proceed while work remains.
+            // Fire-and-forget; old agents without the handler ignore it.
+            try
+            {
+                run.AppendLog($"Discovery complete ({run.DiscoveredFiles} files) — DiscoveryDone sent, phone shifting all cores to proceed");
+                await _hub.Clients.Client(connId).SendAsync("DiscoveryDone", runCts.Token);
+            }
+            catch (Exception ex)
+            {
+                run.AppendLog($"DiscoveryDone send failed: {ex.Message}");
+            }
             try { await Task.WhenAll(workers); }
             catch (OperationCanceledException) { }
 
@@ -578,8 +590,9 @@ public class ActionRunner
             try { await Task.Run(() => pauseGate.Wait(ct), ct); }
             catch (OperationCanceledException) { return; }
         }
-        // Skip Android .Trash and other trash folders that cause Invalid path loops
-        if (folder.Contains(".Trash", StringComparison.OrdinalIgnoreCase) || folder.Contains(".thumbnails", StringComparison.OrdinalIgnoreCase) || folder.Contains("/.") ) return;
+        // NOTE: no path is ever excluded here by design — the user wants every
+        // selected folder fetched as-is, including dot-folders (.thumbnails,
+        // .Trash, .cache). Invalid entries fail per-file downstream.
 
         // Bounded listing slot: concurrent directories each hold one slot only
         // for the listing call itself (released before recursing), so N listing
@@ -941,10 +954,16 @@ public class ActionRunner
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, cts.Token);
 
         FileNodeResultDto? nodeInfo = null;
+        // DIAGNOSTIC (temporary): per-phase latency. Only logs phases slower
+        // than 5s, so a healthy run stays quiet and slow files stand out.
+        long tInfoMs = Environment.TickCount64;
         try
         {
             nodeInfo = await _hub.Clients.Client(connId).InvokeAsync<FileNodeResultDto>(
                 "GetPathInfoWithOverride", item.RelPath, true, fetchFrame, fetchQuality, linked.Token);
+            long infoMs = Environment.TickCount64 - tInfoMs;
+            if (infoMs > 5000)
+                run.AppendLog($"SLOW info {item.RelPath}: info call took {infoMs}ms");
         }
         catch (Exception ex)
         {
@@ -970,6 +989,8 @@ public class ActionRunner
 
         using var ms = new MemoryStream();
         long offset = 0;
+        int chunkCount = 0;
+        long tChunkMs = Environment.TickCount64;
         while (offset < total)
         {
             byte[]? chunk = null;
@@ -987,14 +1008,27 @@ public class ActionRunner
             await ms.WriteAsync(chunk, ct);
             run.AddBytes(chunk.Length);
             offset += chunk.Length;
+            chunkCount++;
         }
+        // DIAGNOSTIC (temporary): see info-phase instrumentation above.
+        long chunkMs = Environment.TickCount64 - tChunkMs;
+        if (chunkMs > 5000)
+            run.AppendLog($"SLOW chunks {item.RelPath}: {chunkCount} chunks, {offset} bytes in {chunkMs}ms");
 
         if (ms.Length == 0 || offset < total) throw new IOException("Incomplete thumbnail transfer");
 
-        _cache.SaveCachedThumbnail(deviceId, item.RelPath, item.Name, ms.ToArray(),
+        // A failed save must NOT count as fetched (previously the empty catch
+        // inside SaveCachedThumbnail hid write loss and inflated FetchedFiles).
+        bool saved = _cache.SaveCachedThumbnail(deviceId, item.RelPath, item.Name, ms.ToArray(),
             nodeInfo.CurrentNode.OriginalLength > 0 ? nodeInfo.CurrentNode.OriginalLength : total,
             isVideo ? "video" : "image", fetchFrame, fetchQuality,
             nodeInfo.CurrentNode.OriginalPreviewLength > 0 ? nodeInfo.CurrentNode.OriginalPreviewLength : 0);
+        if (!saved)
+        {
+            run.FailedFiles++;
+            run.AppendLog($"Cache save failed {item.RelPath} (counted as failed, not fetched)");
+            return;
+        }
 
         run.FetchedFiles++;
         run.AppendLog($"Cached thumb {item.RelPath} (Q={fetchQuality:F2})");

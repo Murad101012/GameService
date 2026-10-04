@@ -13,6 +13,9 @@ public class FileNodeDto {
     public long originalLength;
     public long originalPreviewLength;
     public String lastWriteTimeUtc;
+    // True for required folders inside the App Data root (e.g. Transcoded
+    // Videos): browsable but the server must not offer delete for them.
+    public boolean prot = false;
 
     public FileNodeDto(String name, String relativePath, boolean isDirectory, long length, long originalLength, String lastWriteTimeUtc) {
         this.name = name;
@@ -43,6 +46,7 @@ public class FileNodeDto {
         json.put("originalLength", originalLength);
         json.put("originalPreviewLength", originalPreviewLength);
         json.put("lastWriteTimeUtc", lastWriteTimeUtc);
+        json.put("protected", prot);
         return json;
     }
 

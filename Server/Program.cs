@@ -58,6 +58,7 @@ builder.Services.AddSingleton<TunnelManager>();
 builder.Services.AddSingleton<Socks5ProxyServer>();
 builder.Services.AddSingleton<TunCaptureController>();
 builder.Services.AddSingleton<P2pManager>();
+builder.Services.AddSingleton<CopyService>();
 
 // Razor Pages: enables .cshtml PageModel classes under Pages/
 builder.Services.AddRazorPages();
@@ -319,11 +320,20 @@ app.MapGet("/api/cache/browse/{device}", async (string device, string? path, int
             if (resolved != null) devId = resolved;
         }
     }
-    var folderEntry = cacheMgr.GetFolderCache(devId, path);
+        var folderEntry = cacheMgr.GetFolderCache(devId, path);
     if (folderEntry != null)
     {
         var dirs = folderEntry.Children?.Where(c => c.IsDirectory).ToList() ?? new();
         var files = folderEntry.Children?.Where(c => !c.IsDirectory).ToList() ?? new();
+        // Downloaded-only: the counter and the cards must reflect content that
+        // is actually on disk (thumbnail or full file), never structure-only
+        // listings (those render as warnings and inflate the count).
+        var contentPaths = cacheMgr.GetCachedContentPaths(devId);
+        static string NormPath(string? p) => string.IsNullOrWhiteSpace(p) ? "" : p.Trim().Trim('/');
+        files = files.Where(f => contentPaths.Contains(NormPath(f.RelativePath))).ToList();
+        // NOTE: nothing is ever excluded here by design — offline browsing
+        // shows everything the folder listing contains, matching the fetch
+        // engine which likewise skips no paths.
 
         sort = string.IsNullOrWhiteSpace(sort) ? "newest" : sort.Trim().ToLowerInvariant();
         if (sort == "default") sort = "newest";

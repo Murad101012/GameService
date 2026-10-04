@@ -112,7 +112,9 @@ public sealed class RunNotifier
     }
 
     /// <summary>Refresh the persistent KDE progress job with current counters and speed.</summary>
-    public void Update(ActionRunState run)
+    /// <param name="infoOverride">When set, replaces the default info line (e.g. copy shows current file).</param>
+    /// <param name="indeterminate">When true, no percent is sent (KDE shows a busy indicator).</param>
+    public void Update(ActionRunState run, string? infoOverride = null, bool indeterminate = false)
     {
         lock (_lock)
         {
@@ -134,24 +136,28 @@ public sealed class RunNotifier
                 _lastBytes = bytes;
                 _lastTick = now;
 
-                string info = run.DiscoveredFiles > 0
+                string info = infoOverride ?? (run.DiscoveredFiles > 0
                     ? $"Discovered: {run.DiscoveredFiles} · Fetched: {run.FetchedFiles} · Skipped: {run.SkippedFiles} · Failed: {run.FailedFiles} · Queue: {run.QueueSize}"
-                    : "Fetching…";
+                    : "Fetching…");
 
                 var msg = new
                 {
                     title = $"{_actionName} — {FormatSpeed(mbps)}",
                     info = info,
-                    percent = (int)(progress * 100),
+                    percent = indeterminate ? -1 : (int)(progress * 100),
                     speed = (long)Math.Max(0, bytes),
                     l1 = "Progress",
                     v1 = $"{progress * 100:F0}%",
                     l2 = "Speed",
                     v2 = FormatSpeed(mbps),
                     l3 = "Cores",
-                    v3 = $"{run.DiscoverCores} discover ({run.DiscoverActive} busy) / {run.ProceedCores} proceed ({run.ProceedActive} busy)",
+                    v3 = $"{run.DiscoverCores} discover ({run.DiscoverActive} busy, peak {run.DiscoverPeak}) / {run.ProceedCores} proceed ({run.ProceedActive} busy, peak {run.ProceedPeak})",
                     l4 = "Queue",
-                    v4 = $"{run.QueueSize} (allowed {run.AllowedCores})"
+                    // Server queue = items waiting in our channels; phone queue =
+                    // tasks inside the phone's pools. The phone scales on ITS
+                    // backlog, so a big server queue with ~0 phone queue means the
+                    // phone drains each task fast — not idleness worth scaling for.
+                    v4 = $"{run.QueueSize} (allowed {run.AllowedCores}) · phone: {run.DiscoverQueued + run.ProceedQueued} queued"
                 };
                 _writer.WriteLine(JsonSerializer.Serialize(msg, _jsonOptions));
             }

