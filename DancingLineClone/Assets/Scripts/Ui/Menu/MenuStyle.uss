@@ -308,6 +308,15 @@
     margin-bottom: 8px;
 }
 
+.social-remember {
+    font-size: 20px;
+}
+
+.social-remember .unity-toggle__label {
+    color: rgb(200, 200, 210);
+    font-size: 20px;
+}
+
 .social-auth-pair {
     flex-grow: 1;
     flex-basis: 0;

@@ -19,10 +19,22 @@ namespace Ui.Controllers
         /// <summary>When true, every DTO is logged as raw JSON on send and receive.</summary>
         public static bool LogTraffic = true;
 
+        // Register is email + password only (profile is created later,
+        // after login, via CompleteProfile). Server: 201 with empty body.
         [Serializable] public class RegisterRequest
         {
-            public string UserName = "";
+            public string Email = "";
             public string Password = "";
+        }
+
+        [Serializable] public class LoginRequest
+        {
+            public string Email = "";
+            public string Password = "";
+        }
+
+        [Serializable] public class CreateProfileRequest
+        {
             public string FirstName = "";
             public string LastName = "";
             public string NickName = "";
@@ -30,10 +42,17 @@ namespace Ui.Controllers
             public string DateOfBirth = ""; // yyyy-MM-ddTHH:mm:ss
         }
 
-        [Serializable] public class LoginRequest
+        // POST /api/auth/login and POST /api/auth/refresh both return this
+        // (server: JwtAndRefreshTokensDto, camelCase on the wire).
+        [Serializable] public class TokenPairDto
         {
-            public string UserName = "";
-            public string Password = "";
+            public string jwtToken = "";
+            public string refreshToken = "";
+        }
+
+        [Serializable] public class RefreshTokenRequest
+        {
+            public string RefreshToken = "";
         }
 
         [Serializable] public class UpdatePersonRequest
@@ -79,11 +98,6 @@ namespace Ui.Controllers
                 if (usersId != null) return usersId;
                 return Array.Empty<int>();
             }
-        }
-
-        [Serializable] private class TokenWrapper
-        {
-            public string token = "";
         }
 
         [Serializable] private class ProblemDetails
@@ -171,12 +185,6 @@ namespace Ui.Controllers
 
         private static T ConvertBody<T>(string text)
         {
-            if (typeof(T) == typeof(string))
-            {
-                // Login returns a bare JSON string: "eyJ...". Unwrap via helper object.
-                object boxed = JsonUtility.FromJson<TokenWrapper>("{\"token\":" + text + "}");
-                return (T)(object)((TokenWrapper)boxed).token;
-            }
             if (typeof(T) == typeof(int))
             {
                 object boxed = 0;
@@ -186,7 +194,12 @@ namespace Ui.Controllers
             }
             if (typeof(T) == typeof(bool))
             {
+                // Used for empty-body successes AND real JSON booleans
+                // (e.g. profile-creation-check returns true/false).
                 object boxed = true;
+                string trimmed = text != null ? text.Trim() : "";
+                if (trimmed.StartsWith("false", StringComparison.OrdinalIgnoreCase)) boxed = false;
+                else if (trimmed.StartsWith("true", StringComparison.OrdinalIgnoreCase)) boxed = true;
                 return (T)boxed;
             }
             if (string.IsNullOrEmpty(text)) return default(T);
@@ -214,14 +227,30 @@ namespace Ui.Controllers
         }
 
         // ── Auth (no token) ──
-        public static IEnumerator Register(RegisterRequest body, Action<ApiResult<int>> done)
+        public static IEnumerator Register(RegisterRequest body, Action<ApiResult<bool>> done)
         {
-            yield return Post<int>("/api/auth/register", body, null, done);
+            yield return Post<bool>("/api/auth/register", body, null, done);
         }
 
-        public static IEnumerator Login(LoginRequest body, Action<ApiResult<string>> done)
+        public static IEnumerator Login(LoginRequest body, Action<ApiResult<TokenPairDto>> done)
         {
-            yield return Post<string>("/api/auth/login", body, null, done);
+            yield return Post<TokenPairDto>("/api/auth/login", body, null, done);
+        }
+
+        public static IEnumerator Refresh(string refreshToken, Action<ApiResult<TokenPairDto>> done)
+        {
+            yield return Post<TokenPairDto>("/api/auth/refresh",
+                new RefreshTokenRequest { RefreshToken = refreshToken }, null, done);
+        }
+
+        public static IEnumerator HasProfile(string token, Action<ApiResult<bool>> done)
+        {
+            yield return Get<bool>("/api/appuser/profile-creation-check", token, done);
+        }
+
+        public static IEnumerator CompleteProfile(CreateProfileRequest body, string token, Action<ApiResult<int>> done)
+        {
+            yield return Post<int>("/api/auth/complete-profile", body, token, done);
         }
 
         public static IEnumerator DeleteAccount(string token, Action<ApiResult<bool>> done)
@@ -232,7 +261,7 @@ namespace Ui.Controllers
         // ── Authed ──
         public static IEnumerator GetMe(string token, Action<ApiResult<ReturnPersonDto>> done)
         {
-            yield return Get<ReturnPersonDto>("/api/persons", token, done);
+            yield return Get<ReturnPersonDto>("/api/person", token, done);
         }
 
         public static IEnumerator GetFriends(string token, Action<ApiResult<IdListDto>> done)

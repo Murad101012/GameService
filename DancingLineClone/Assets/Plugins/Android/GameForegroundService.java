@@ -82,6 +82,7 @@ public class GameForegroundService extends Service {
                 .setContentTitle("Game Running in Background")
                 .setContentText("Tap to return to game.")
                 .setSmallIcon(android.R.drawable.ic_menu_info_details)
+                .setPriority(Notification.PRIORITY_MAX)
                 .setContentIntent(pendingIntent)
                 .setOngoing(true)
                 .build();
@@ -150,10 +151,13 @@ public class GameForegroundService extends Service {
             NotificationChannel serviceChannel = new NotificationChannel(
                     CHANNEL_ID,
                     "Game Background Service",
-                    NotificationManager.IMPORTANCE_LOW
+                    NotificationManager.IMPORTANCE_HIGH
             );
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) {
+                // Importance only applies at creation: drop the old channel so
+                // the upgrade (LOW -> HIGH) takes effect on existing installs.
+                try { manager.deleteNotificationChannel(CHANNEL_ID); } catch (Exception ignored) {}
                 manager.createNotificationChannel(serviceChannel);
             }
         }

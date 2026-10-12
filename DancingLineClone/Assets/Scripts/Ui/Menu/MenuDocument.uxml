@@ -37,8 +37,8 @@
                     </ui:VisualElement>
                     <ui:VisualElement name="Social_AuthRow1" class="social-auth-row">
                         <ui:VisualElement class="social-auth-pair">
-                            <ui:Label text="Username" class="social-caption"/>
-                            <ui:TextField name="Fld_UserName"/>
+                            <ui:Label text="Email" class="social-caption"/>
+                            <ui:TextField name="Fld_Email"/>
                         </ui:VisualElement>
                         <ui:VisualElement class="social-auth-pair">
                             <ui:Label text="Password" class="social-caption"/>
@@ -77,6 +77,9 @@
                         <ui:TextField name="Fld_BirthMonth" class="social-birth-field" max-length="2"/>
                         <ui:Label text="D" class="social-birth-label"/>
                         <ui:TextField name="Fld_BirthDay" class="social-birth-field" max-length="2"/>
+                    </ui:VisualElement>
+                    <ui:VisualElement name="Social_RememberRow" class="social-auth-row">
+                        <ui:Toggle name="Tgl_RememberMe" label="Remember me" value="true" class="social-remember"/>
                     </ui:VisualElement>
                     <ui:Button name="Btn_Process" text="Process" class="social-process"/>
                 </ui:VisualElement>

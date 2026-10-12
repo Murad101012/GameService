@@ -29,11 +29,17 @@ namespace Ui.ElementReferences
         private readonly string _authViewName = "Social_AuthView";
         public VisualElement AuthViewReference;
 
+        private readonly string _authTabsName = "Social_AuthTabs";
+        public VisualElement AuthTabsReference;
+
         private readonly string _showLoginName = "Btn_ShowLogin";
         public Button ShowLoginReference;
 
         private readonly string _showRegisterName = "Btn_ShowRegister";
         public Button ShowRegisterReference;
+
+        private readonly string _authRow1Name = "Social_AuthRow1";
+        public VisualElement AuthRow1Reference;
 
         private readonly string _authRow2Name = "Social_AuthRow2";
         public VisualElement AuthRow2Reference;
@@ -41,8 +47,8 @@ namespace Ui.ElementReferences
         private readonly string _authRow3Name = "Social_AuthRow3";
         public VisualElement AuthRow3Reference;
 
-        private readonly string _userNameName = "Fld_UserName";
-        public TextField UserNameReference;
+        private readonly string _emailName = "Fld_Email";
+        public TextField EmailReference;
 
         private readonly string _passwordName = "Fld_Password";
         public TextField PasswordReference;
@@ -82,6 +88,12 @@ namespace Ui.ElementReferences
 
         private readonly string _processName = "Btn_Process";
         public Button ProcessReference;
+
+        private readonly string _rememberRowName = "Social_RememberRow";
+        public VisualElement RememberRowReference;
+
+        private readonly string _rememberMeName = "Tgl_RememberMe";
+        public Toggle RememberMeReference;
 
         private readonly string _mainViewName = "Social_MainView";
         public VisualElement MainViewReference;
@@ -166,11 +178,13 @@ namespace Ui.ElementReferences
             SocialWindowReference = Root.Q<VisualElement>(_socialWindowName);
             SocialTitleReference = Root.Q<Label>(_socialTitleName);
             AuthViewReference = Root.Q<VisualElement>(_authViewName);
+            AuthTabsReference = Root.Q<VisualElement>(_authTabsName);
             ShowLoginReference = Root.Q<Button>(_showLoginName);
             ShowRegisterReference = Root.Q<Button>(_showRegisterName);
+            AuthRow1Reference = Root.Q<VisualElement>(_authRow1Name);
             AuthRow2Reference = Root.Q<VisualElement>(_authRow2Name);
             AuthRow3Reference = Root.Q<VisualElement>(_authRow3Name);
-            UserNameReference = Root.Q<TextField>(_userNameName);
+            EmailReference = Root.Q<TextField>(_emailName);
             PasswordReference = Root.Q<TextField>(_passwordName);
             FirstNameReference = Root.Q<TextField>(_firstNameName);
             LastNameReference = Root.Q<TextField>(_lastNameName);
@@ -184,6 +198,8 @@ namespace Ui.ElementReferences
             Gender1Reference = Root.Q<Button>(_gender1Name);
             Gender2Reference = Root.Q<Button>(_gender2Name);
             ProcessReference = Root.Q<Button>(_processName);
+            RememberRowReference = Root.Q<VisualElement>(_rememberRowName);
+            RememberMeReference = Root.Q<Toggle>(_rememberMeName);
             MainViewReference = Root.Q<VisualElement>(_mainViewName);
             TabFriendsReference = Root.Q<Button>(_tabFriendsName);
             TabRequestsReference = Root.Q<Button>(_tabRequestsName);
@@ -208,11 +224,13 @@ namespace Ui.ElementReferences
             Validate(SocialWindowReference);
             Validate(SocialTitleReference);
             Validate(AuthViewReference);
+            Validate(AuthTabsReference);
             Validate(ShowLoginReference);
             Validate(ShowRegisterReference);
+            Validate(AuthRow1Reference);
             Validate(AuthRow2Reference);
             Validate(AuthRow3Reference);
-            Validate(UserNameReference);
+            Validate(EmailReference);
             Validate(PasswordReference);
             Validate(FirstNameReference);
             Validate(LastNameReference);
@@ -226,6 +244,8 @@ namespace Ui.ElementReferences
             Validate(Gender1Reference);
             Validate(Gender2Reference);
             Validate(ProcessReference);
+            Validate(RememberRowReference);
+            Validate(RememberMeReference);
             Validate(MainViewReference);
             Validate(TabFriendsReference);
             Validate(TabRequestsReference);
